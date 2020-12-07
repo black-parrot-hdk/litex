@@ -53,7 +53,7 @@ repos = [
     ("pythondata-cpu-rocket",      ("https://github.com/litex-hub/", False, True, None)),
 #    ("pythondata-cpu-minerva",     ("https://github.com/litex-hub/", False, True, None)),
 #    ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xba76652)),
-    ("pythondata-cpu-blackparrot", ("https://github.com/litex-hub/", False, True, 0x7eb1037637d8515a259e204117b7b1273b1c2941)),
+    ("pythondata-cpu-blackparrot", ("https://github.com/litex-hub/", False, True, None)),
 #    ("pythondata-cpu-cv32e40p",    ("https://github.com/litex-hub/", True,  True, None)),
 ]
 
