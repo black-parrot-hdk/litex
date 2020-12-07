@@ -6,20 +6,8 @@
 This repository presents necessary steps to run Linux on FPGA and simulation level using BP core integrated into LiteX.
 > **Note:** Tested on Ubuntu 18.04
 
-> **Note:** Since both BlackParrot and Litex are under active development, newer updates on LiteX or BP can cause some compatibility issues. If the most recent BP and LiteX do not work, please switch to to following commits (by updating their submodules as well):
-```
-LiteX: c136113a9b71cbcbdf525aaad38acb012f4a12f3
-LiteDRAM: fe478382e16ff3592e07774580c96bde0dc82da3
-litex-boards: c7404e356f737a58be4527b3ae8de20fce96defd
-blackparrot: 7eb1037637d8515a259e204117b7b1273b1c2941
-```
-> Also copy the files and folders in patch_files to the following paths:
-```
-core.py -> litex/soc/cores/cpu/blackparrot/
-setEnvironment.sh -> litex/soc/cores/cpu/blackparrot/
-Makefile -> litex/soc/software/bios/
-bp_litex/ -> litex/soc/cores/cpu/blackparrot/
-```
+> **Note:** Since both BlackParrot and Litex are under active development, newer updates on LiteX or BP can cause some compatibility issues. This repository includes LiteX repos that are compatible with a specific version of BlackParrot (7eb1037637d8515a259e204117b7b1273b1c2941)
+
 ## FPGA Demo
 
 https://www.youtube.com/watch?v=npeDkfEMsoI&feature=youtu.be
@@ -30,15 +18,14 @@ https://www.youtube.com/watch?v=npeDkfEMsoI&feature=youtu.be
 ```
 $ sudo apt install build-essential device-tree-compiler wget git python3-setuptools libevent-dev libjson-c-dev
 $ sudo apt install verilator # for simulation
-$ git clone https://github.com/enjoy-digital/linux-on-litex-blackparrot
-
 ```
 ## Installing LiteX
 
 ```
-$ wget https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py
-$ chmod +x litex_setup.py
-$ ./litex_setup.py init install --user
+$ git clone https://github.com/black-parrot/litex
+$ cd litex
+$ ./litex_setup.py init dev install --user
+$ ./apply_patches.sh
 ```
 
 ## Installing RISC-V toolchain
@@ -70,9 +57,8 @@ First modify $LITEX/litex/litex_sim.py by replacing soc.add_constant("ROM_BOOT_A
 
 Next, launch simulation.
 ```
-$ cd linux-on-litex-blackparrot
-$ $LITEX/litex/litex_sim.py --cpu-type blackparrot --cpu-variant standard --integrated-rom-size 40960 --output-dir $PWD/build/BP_linux_simu/ --ram-init prebuilt/simulation/Genesys2/bbl
-
+$ cd litex
+$ $LITEX/litex/tools/litex_sim.py --cpu-type blackparrot --cpu-variant standard --output-dir $PWD/build/BP_linux_simu/ --ram-init prebuilt/simulation/Genesys2/boot.bin.uart.simu
 ```
 
 ### FPGA
