@@ -69,7 +69,7 @@ $ LITEX/litex/boards/genesys2.py --cpu-type blackparrot --cpu-variant standard -
 In another terminal, launch LiteX terminal.
 ```
 $ cd linux-on-litex-blackparrot
-$ sudo $LITEX/litex/tools/litex_term.py /dev/ttyUSBX --images images.json --no-crc
+$ $LITEX/litex/tools/litex_term.py --kernel prebuilt/fpga/Genesys2/bbl --kernel-adr 0x80000000 /dev/ttyUSB0
 ```
 Load the FPGA bitstream top.bit to your FPGA (you can use vivado hardware manager)
 
