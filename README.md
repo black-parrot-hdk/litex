@@ -10,18 +10,18 @@ This repository presents necessary steps to run Linux on FPGA and simulation lev
 
 ## FPGA Demo
 
-https://www.youtube.com/watch?v=npeDkfEMsoI&feature=youtu.be
+[![https://www.youtube.com/watch?v=npeDkfEMsoI](https://img.youtube.com/vi/npeDkfEMsoI/0.jpg)](https://www.youtube.com/watch?v=npeDkfEMsoI "BP LiteX Linux FPGA")
 
 
 ## Prerequisites
 
-```
+```console
 $ sudo apt install build-essential device-tree-compiler wget git python3-setuptools libevent-dev libjson-c-dev
 $ sudo apt install verilator # for simulation
 ```
 ## Installing LiteX
 
-```
+```console
 $ git clone https://github.com/black-parrot/litex
 $ cd litex
 $ ./litex_setup.py init dev install --user
@@ -29,7 +29,7 @@ $ ./apply_patches.sh
 ```
 
 ## Installing RISC-V toolchain
-```
+```console
 $ ./litex_setup.py gcc 
 ```
 Do not forget to add RISC-V toolchain binary path to your PATH.
@@ -39,9 +39,9 @@ Do not forget to add RISC-V toolchain binary path to your PATH.
 
 Add the following lines to your bashrc to set up BlackParrot environment variables
 
-```
+```bash
 pushd .
-cd  PATH/TO/LITEX/litex/soc/cores/cpu/blackparrot
+cd PATH/TO/LITEX/litex/soc/cores/cpu/blackparrot
 source ./setEnvironment.sh
 popd
 ```
@@ -56,28 +56,28 @@ Pre-built bistream for Genesys Kintex 2 and pre-built Berkeley boot loader (bbl)
 First modify $LITEX/litex/litex_sim.py by replacing soc.add_constant("ROM_BOOT_ADDRESS", 0x40000000) with soc.add_constant("ROM_BOOT_ADDRESS", 0x80000000)
 
 Next, launch simulation.
-```
+```console
 $ cd litex
 $ $LITEX/litex/tools/litex_sim.py --cpu-type blackparrot --cpu-variant standard --output-dir $PWD/build/BP_linux_simu/ --ram-init prebuilt/simulation/Genesys2/boot.bin.uart.simu
 ```
 
 ### FPGA
 Generate the bitstream 'top.bit' under build/BP_trial/gateware folder
-```
+```console
 $ LITEX/litex/boards/genesys2.py --cpu-type blackparrot --cpu-variant standard --output-dir $PWD/build/BP_Trial --integrated-rom-size 51200 --build  
 ```
 In another terminal, launch LiteX terminal.
-```
+```console
 $ cd linux-on-litex-blackparrot
 $ $LITEX/litex/tools/litex_term.py --kernel prebuilt/fpga/Genesys2/bbl --kernel-adr 0x80000000 /dev/ttyUSB0
 ```
 Load the FPGA bitstream top.bit to your FPGA (you can use vivado hardware manager)
 
-This step will boot up LinuX after copying bbl to DRAM through UART. The whole process will take roughly 15 minutes. 
+This step will boot up LinuX after copying bbl to DRAM through UART. The whole process will take roughly 15 minutes. You can login with username `root` and password `blackparrot`.
 
 ## Generating the BBL manually 
 If you need to generate a BBL from scratch, please follow these steps.
-```sh
+```console
 $ git clone https://github.com/bsg-external/freedom-u-sdk.git
 $ cd freedom-sdk
 $ git checkout blackparrot_mods
