@@ -22,7 +22,7 @@ $ sudo apt install verilator # for simulation
 ## Installing LiteX
 
 ```console
-$ git clone https://github.com/black-parrot/litex
+$ git clone https://github.com/black-parrot-hdk/litex
 $ cd litex
 $ ./litex_setup.py init dev install --user
 $ ./apply_patches.sh
