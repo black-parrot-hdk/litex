@@ -44,17 +44,18 @@ repos = [
 
     # Optional LiteX data
     ("pythondata-misc-tapcfg",     ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-lm32",        ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-mor1kx",      ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-picorv32",    ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-serv",        ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-misc-opentitan",  ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-lm32",        ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-mor1kx",      ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-picorv32",    ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-serv",        ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-vexriscv",    ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-vexriscv-smp",("https://github.com/litex-hub/", True,  True, None)),
+    ("pythondata-cpu-vexriscv-smp",("https://github.com/litex-hub/", True,  True, None)),
     ("pythondata-cpu-rocket",      ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-minerva",     ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xba76652)),
+    ("pythondata-cpu-minerva",     ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xf9807b6)),
     ("pythondata-cpu-blackparrot", ("https://github.com/litex-hub/", False, True, None)),
-#    ("pythondata-cpu-cv32e40p",    ("https://github.com/litex-hub/", True,  True, None)),
+    ("pythondata-cpu-cv32e40p",    ("https://github.com/litex-hub/", True,  True, None)),
 ]
 
 repos = OrderedDict(repos)
@@ -151,6 +152,8 @@ if "update" in sys.argv[1:]:
         os.chdir(os.path.join(current_path, name))
         subprocess.check_call("git checkout master", shell=True)
         subprocess.check_call("git pull --ff-only", shell=True)
+        if need_recursive:
+            subprocess.check_call("git submodule update --init --recursive", shell=True)
         if sha1 is not None:
             os.chdir(os.path.join(current_path, name))
             os.system("git checkout {:7x}".format(sha1))
