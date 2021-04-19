@@ -40,7 +40,7 @@ repos = [
     ("litehyperbus", ("https://github.com/litex-hub/",     False, True, None)),
 
     # LiteX boards support
-    ("litex-boards", ("https://github.com/litex-hub/",     False, True, 0xc7404e356f737a58be4527b3ae8de20fce96defd)),
+    ("litex-boards", ("https://github.com/litex-hub/",     False, True, None)),
 
     # Optional LiteX data
     ("pythondata-misc-tapcfg",     ("https://github.com/litex-hub/", False, True, None)),
