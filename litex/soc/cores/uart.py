@@ -119,7 +119,7 @@ class RS232PHYTX(Module):
                 If(tx_busy,
                     Cat(phase_accumulator_tx, uart_clk_txen).eq(phase_accumulator_tx + tuning_word)
                 ).Else(
-                    Cat(phase_accumulator_tx, uart_clk_txen).eq(0)
+                    Cat(phase_accumulator_tx, uart_clk_txen).eq(tuning_word)
                 )
         ]
 
@@ -235,7 +235,7 @@ class UART(Module, AutoCSR, UARTInterface):
             self._rxempty.status.eq(~rx_fifo.source.valid),
             self._rxtx.w.eq(rx_fifo.source.data),
             rx_fifo.source.ready.eq(self.ev.rx.clear | (rx_fifo_rx_we & self._rxtx.we)),
-            # Generate RX IRQ when tx_fifo becomes non-empty
+            # Generate RX IRQ when rx_fifo becomes non-empty
             self.ev.rx.trigger.eq(~rx_fifo.source.valid)
         ]
 

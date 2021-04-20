@@ -11,6 +11,7 @@
 // This file is Copyright (c) 2018 Sergiusz Bazanski <q3k@q3k.org>
 // This file is Copyright (c) 2016 Tim 'mithro' Ansell <mithro@mithis.com>
 // This file is Copyright (c) 2020 Franck Jullien <franck.jullien@gmail.com>
+// This file is Copyright (c) 2020 Antmicro <www.antmicro.com>
 
 // License: BSD
 
@@ -24,29 +25,26 @@
 #include <irq.h>
 #include <crc.h>
 
+#include "boot.h"
+#include "readline.h"
+#include "helpers.h"
+#include "command.h"
+
 #include <generated/csr.h>
 #include <generated/soc.h>
 #include <generated/mem.h>
 #include <generated/git.h>
 
-#ifdef CSR_ETHMAC_BASE
-#include <net/microudp.h>
-#endif
-
-#ifdef CSR_SPIFLASH_BASE
 #include <spiflash.h>
-#endif
 
-#ifdef CSR_ETHPHY_MDIO_W_ADDR
-#include <mdio.h>
-#endif
+#include <liblitedram/sdram.h>
 
-#include "sdram.h"
-#include "sdcard.h"
-#include "boot.h"
-#include "readline.h"
-#include "helpers.h"
-#include "command.h"
+#include <libliteeth/udp.h>
+#include <libliteeth/mdio.h>
+
+#include <liblitespi/spiflash.h>
+
+#include <liblitesdcard/sdcard.h>
 
 static void boot_sequence(void)
 {
@@ -132,6 +130,9 @@ int main(int i, char **c)
 	if (sdr_ok !=1)
 		printf("Memory initialization failed\n");
 	printf("\n");
+#endif
+#ifdef CSR_SPIFLASH_MMAP_BASE
+	spiflash_init();
 #endif
 
 	if(sdr_ok) {

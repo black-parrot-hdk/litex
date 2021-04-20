@@ -18,9 +18,9 @@ def build_test(socs):
     errors = 0
     for soc in socs:
         os.system("rm -rf build")
-        builder = Builder(soc, output_dir="./build", compile_software=False, compile_gateware=False)
+        builder = Builder(soc, compile_software=False, compile_gateware=False)
         builder.build()
-        errors += not os.path.isfile("./build/gateware/top.v")
+        errors += not os.path.isfile("build/{build_name}/gateware/{build_name}.v".format(build_name=soc.build_name))
     os.system("rm -rf build")
     return errors
 
@@ -138,7 +138,7 @@ litex/boards/targets/simple.py litex.boards.platforms.{p} \
 """.format(p=p)
                 subprocess.check_call(cmd, shell=True)
 
-    def test_cpu_none(self):
+    def test_z_cpu_none(self): # FIXME: workaround to execute it last.
         from litex.boards.targets.arty import BaseSoC
         errors = build_test([BaseSoC(cpu_type=None)])
         self.assertEqual(errors, 0)

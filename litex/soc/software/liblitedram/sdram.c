@@ -17,7 +17,6 @@
 #include <generated/sdram_phy.h>
 #endif
 #include <generated/mem.h>
-#include <hw/flags.h>
 #include <system.h>
 
 #include "sdram.h"
@@ -552,7 +551,7 @@ static int read_level_scan(int module, int bitslip)
 	sdram_dfii_pird_baddress_write(0);
 	score = 0;
 
-	printf("m%d, b%d: |", module, bitslip);
+	printf("m%d, b%02d: |", module, bitslip);
 	read_delay_rst(module);
 	for(i=0;i<SDRAM_PHY_DELAYS;i++) {
 		int working = 1;
@@ -978,7 +977,7 @@ static void read_leveling(void)
 		}
 
 		/* select best read window */
-		printf("best: m%d, b%d ", module, best_bitslip);
+		printf("best: m%d, b%02d ", module, best_bitslip);
 		read_bitslip_rst(module);
 		for (bitslip=0; bitslip<best_bitslip; bitslip++)
 			read_bitslip_inc(module);

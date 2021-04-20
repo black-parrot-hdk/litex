@@ -95,6 +95,7 @@ class SoCCore(LiteXSoC):
         uart_fifo_depth          = 16,
         # Timer parameters
         with_timer               = True,
+        timer_uptime             = False,
         # Controller parameters
         with_ctrl                = True,
         # Others
@@ -127,7 +128,6 @@ class SoCCore(LiteXSoC):
         # Parameters management --------------------------------------------------------------------
         cpu_type          = None if cpu_type == "None" else cpu_type
         cpu_reset_address = None if cpu_reset_address == "None" else cpu_reset_address
-        cpu_variant = cpu.check_format_cpu_variant(cpu_variant)
 
         self.cpu_type                   = cpu_type
         self.cpu_variant                = cpu_variant
@@ -182,6 +182,8 @@ class SoCCore(LiteXSoC):
         # Add Timer
         if with_timer:
             self.add_timer(name="timer0")
+            if timer_uptime:
+                self.timer0.add_uptime()
 
         # Add CSR bridge
         self.add_csr_bridge(self.mem_map["csr"])

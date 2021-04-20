@@ -20,17 +20,15 @@
 #include <generated/csr.h>
 #include <generated/soc.h>
 
-#ifdef CSR_ETHMAC_BASE
-#include <net/microudp.h>
-#include <net/tftp.h>
-#endif
-
-#ifdef CSR_SPIFLASH_BASE
-#include <spiflash.h>
-#endif
-
 #include "sfl.h"
 #include "boot.h"
+
+#include <spiflash.h>
+
+#include <libliteeth/udp.h>
+#include <libliteeth/tftp.h>
+
+#include <liblitesdcard/spisdcard.h>
 
 extern void boot_helper(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr);
 
@@ -217,7 +215,7 @@ int serialboot(void)
 				break;
 			}
 			case SFL_CMD_REBOOT:
-#ifdef CSR_CTRL_BASE
+#ifdef CSR_CTRL_RESET_ADDR
 				uart_write(SFL_ACK_SUCCESS);
 				ctrl_reset_write(1);
 #endif
@@ -340,7 +338,7 @@ void netboot(void)
 
 	ip = IPTOINT(REMOTEIP1, REMOTEIP2, REMOTEIP3, REMOTEIP4);
 
-	microudp_start(macadr, IPTOINT(LOCALIP1, LOCALIP2, LOCALIP3, LOCALIP4));
+	udp_start(macadr, IPTOINT(LOCALIP1, LOCALIP2, LOCALIP3, LOCALIP4));
 
 	tftp_port = TFTP_SERVER_PORT;
 	printf("Fetching from: UDP/%d\n", tftp_port);
@@ -399,7 +397,7 @@ static unsigned int check_image_in_flash(unsigned int base_address)
 	return length;
 }
 
-#if defined(MAIN_RAM_BASE) && defined(CONFIG_CPU_TYPE_VEXRISCV) && defined(CONFIG_CPU_VARIANT_LINUX)
+#if defined(MAIN_RAM_BASE) && defined(FLASH_BOOT_ADDRESS)
 static int copy_image_from_flash_to_ram(unsigned int flash_address, unsigned int ram_address)
 {
 	unsigned int length;
@@ -408,7 +406,7 @@ static int copy_image_from_flash_to_ram(unsigned int flash_address, unsigned int
 	if(length > 0) {
 		printf("Copying %d bytes from 0x%08x to 0x%08x...\n", length, flash_address, ram_address);
 		// skip length and crc
-		memcpy((void *)ram_address, (void *)flash_address + 8, length);
+		memcpy((void *)ram_address, (unsigned int *)(flash_address + 2 * sizeof(unsigned int)), length);
 		return 1;
 	}
 
@@ -432,9 +430,9 @@ static int copy_image_from_flash_to_ram(unsigned int flash_address, unsigned int
 void flashboot(void)
 {
 	unsigned int length;
+	unsigned int result;
 
 #if defined(MAIN_RAM_BASE) && defined(CONFIG_CPU_TYPE_VEXRISCV) && defined(CONFIG_CPU_VARIANT_LINUX)
-	unsigned int result;
 
 	printf("Loading Image from flash...\n");
 	result = copy_image_from_flash_to_ram(
@@ -475,9 +473,9 @@ void flashboot(void)
 		return;
 
 #ifdef MAIN_RAM_BASE
-	printf("Loading %d bytes from flash...\n", length);
-	// skip length and crc
-	memcpy((void *)MAIN_RAM_BASE, (unsigned int *)(FLASH_BOOT_ADDRESS + 2 * sizeof(unsigned int)), length);
+	result = copy_image_from_flash_to_ram(FLASH_BOOT_ADDRESS, MAIN_RAM_BASE);
+	if(!result)
+		return;
 #endif
 
 	boot(0, 0, 0, FIRMWARE_BASE_ADDRESS);
@@ -497,7 +495,6 @@ void romboot(void)
 
 // SPI HARDWARE BITBANG
 #ifdef CSR_SPISDCARD_BASE
-#include <spisdcard.h>
 
 void spisdcardboot(void)
 {
@@ -512,19 +509,34 @@ void spisdcardboot(void)
 		return;
 	}
 
-#if defined(CONFIG_CPU_TYPE_VEXRISCV) && defined(CONFIG_CPU_VARIANT_LINUX)
-	if(spi_sdcard_readFile("IMAGE","",MAIN_RAM_BASE+KERNEL_IMAGE_RAM_OFFSET)==0) return;
-	if(spi_sdcard_readFile("ROOTFS~1","CPI",MAIN_RAM_BASE+ROOTFS_IMAGE_RAM_OFFSET)==0) return;
-	if(spi_sdcard_readFile("RV32","DTB",MAIN_RAM_BASE+DEVICE_TREE_IMAGE_RAM_OFFSET)==0) return;
-	if(spi_sdcard_readFile("EMULATOR","BIN",MAIN_RAM_BASE+EMULATOR_IMAGE_RAM_OFFSET)==0) return;
+	unsigned int result;
 
-	boot(0,0,0,MAIN_RAM_BASE + EMULATOR_IMAGE_RAM_OFFSET);
-#else
-	if(spi_sdcard_readFile("BOOT","BIN",MAIN_RAM_BASE)==0) {
-		printf("SD Card SPI boot failed\n");
+#if defined(CONFIG_CPU_TYPE_VEXRISCV) && defined(CONFIG_CPU_VARIANT_LINUX)
+	result = spi_sdcard_readFile("IMAGE", "",
+				MAIN_RAM_BASE + KERNEL_IMAGE_RAM_OFFSET);
+
+	if(result)
+		result &= spi_sdcard_readFile("ROOTFS~1", "CPI",
+				MAIN_RAM_BASE + ROOTFS_IMAGE_RAM_OFFSET);
+
+	if(result)
+		result &= spi_sdcard_readFile("RV32", "DTB",
+				MAIN_RAM_BASE + DEVICE_TREE_IMAGE_RAM_OFFSET);
+
+	if(result)
+		result &= spi_sdcard_readFile("EMULATOR", "BIN",
+				MAIN_RAM_BASE + EMULATOR_IMAGE_RAM_OFFSET);
+
+	if(result) {
+		boot(0, 0, 0, MAIN_RAM_BASE + EMULATOR_IMAGE_RAM_OFFSET);
 		return;
 	}
-	boot(0, 0, 0, MAIN_RAM_BASE);
 #endif
+
+	result = spi_sdcard_readFile("BOOT", "BIN", MAIN_RAM_BASE);
+	if(result)
+		boot(0, 0, 0, MAIN_RAM_BASE);
+	else
+		printf("SD Card SPI boot failed\n");
 }
 #endif

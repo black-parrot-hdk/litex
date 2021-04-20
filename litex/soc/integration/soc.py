@@ -22,10 +22,6 @@ from litex.soc.interconnect import wishbone
 from litex.soc.interconnect import wishbone2csr
 from litex.soc.interconnect import axi
 
-# TODO:
-# - replace raise with exit on logging error.
-# - cleanup SoCCSRRegion
-
 logging.basicConfig(level=logging.INFO)
 
 # Helpers ------------------------------------------------------------------------------------------
@@ -611,30 +607,38 @@ class SoCIRQHandler(SoCLocHandler):
 # SoCController ------------------------------------------------------------------------------------
 
 class SoCController(Module, AutoCSR):
-    def __init__(self):
-        self._reset      = CSRStorage(1, description="""
-            Write a ``1`` to this register to reset the SoC.""")
-        self._scratch    = CSRStorage(32, reset=0x12345678, description="""
-            Use this register as a scratch space to verify that software read/write accesses
-            to the Wishbone/CSR bus are working correctly. The initial reset value of 0x1234578
-            can be used to verify endianness.""")
-        self._bus_errors = CSRStatus(32, description="""
-            Total number of Wishbone bus errors (timeouts) since last reset.""")
+    def __init__(self,
+        with_reset    = True,
+        with_scratch  = True,
+        with_errors   = True):
+
+        if with_reset:
+            self._reset = CSRStorage(1, description="""Write a ``1`` to this register to reset the SoC.""")
+        if with_scratch:
+            self._scratch = CSRStorage(32, reset=0x12345678, description="""
+                Use this register as a scratch space to verify that software read/write accesses
+                to the Wishbone/CSR bus are working correctly. The initial reset value of 0x1234578
+                can be used to verify endianness.""")
+        if with_errors:
+            self._bus_errors = CSRStatus(32, description="Total number of Wishbone bus errors (timeouts) since start.")
 
         # # #
 
         # Reset
-        self.reset = Signal()
-        self.comb += self.reset.eq(self._reset.re)
+        if with_reset:
+            self.reset = Signal()
+            self.comb += self.reset.eq(self._reset.re)
 
-        # Bus errors
-        self.bus_error = Signal()
-        bus_errors     = Signal(32)
-        self.sync += \
-            If(bus_errors != (2**len(bus_errors)-1),
-                If(self.bus_error, bus_errors.eq(bus_errors + 1))
-            )
-        self.comb += self._bus_errors.status.eq(bus_errors)
+        # Errors
+        if with_errors:
+            self.bus_error = Signal()
+            bus_errors     = Signal(32)
+            self.sync += [
+                If(bus_errors != (2**len(bus_errors)-1),
+                    If(self.bus_error, bus_errors.eq(bus_errors + 1))
+                )
+            ]
+            self.comb += self._bus_errors.status.eq(bus_errors)
 
 # SoC ----------------------------------------------------------------------------------------------
 
@@ -736,9 +740,9 @@ class SoC(Module):
             self.add_constant(name, value)
 
     # SoC Main Components --------------------------------------------------------------------------
-    def add_controller(self, name="ctrl"):
+    def add_controller(self, name="ctrl", **kwargs):
         self.check_if_exists(name)
-        setattr(self.submodules, name, SoCController())
+        setattr(self.submodules, name, SoCController(**kwargs))
         self.csr.add(name, use_loc_if_exists=True)
 
     def add_ram(self, name, origin, size, contents=[], mode="rw"):
@@ -769,21 +773,27 @@ class SoC(Module):
 
     def add_cpu(self, name="vexriscv", variant="standard", cls=None, reset_address=None):
         if name not in cpu.CPUS.keys():
-            self.logger.error("{} CPU {}, supporteds: {}".format(
+            self.logger.error("{} CPU {}, supporteds: {}.".format(
                 colorer(name),
                 colorer("not supported", color="red"),
                 colorer(", ".join(cpu.CPUS.keys()))))
             raise
         # Add CPU
         cpu_cls = cls if cls is not None else cpu.CPUS[name]
+        if variant not in cpu_cls.variants:
+            self.logger.error("{} CPU variant {}, supporteds: {}.".format(
+                colorer(variant),
+                colorer("not supported", color="red"),
+                colorer(", ".join(cpu_cls.variants))))
+            raise
         self.submodules.cpu = cpu_cls(self.platform, variant)
         # Update SoC with CPU constraints
         for n, (origin, size) in enumerate(self.cpu.io_regions.items()):
             self.bus.add_region("io{}".format(n), SoCIORegion(origin=origin, size=size, cached=False))
         self.mem_map.update(self.cpu.mem_map) # FIXME
-        self.csr.update_alignment(self.cpu.data_width)
         # Add Bus Masters/CSR/IRQs
         if not isinstance(self.cpu, cpu.CPUNone):
+            self.csr.update_alignment(self.cpu.data_width)
             if reset_address is None:
                 reset_address = self.mem_map["rom"]
             self.cpu.set_reset_address(reset_address)
@@ -794,8 +804,11 @@ class SoC(Module):
                 for name, loc in self.cpu.interrupts.items():
                     self.irq.add(name, loc)
                 self.add_config("CPU_HAS_INTERRUPT")
+
+
             if hasattr(self, "ctrl"):
-                self.comb += self.cpu.reset.eq(self.ctrl.reset)
+                if hasattr(self.ctrl, "reset"):
+                    self.comb += self.cpu.reset.eq(self.ctrl.reset)
             self.add_config("CPU_RESET_ADDR", reset_address)
         # Add constants
         self.add_config("CPU_TYPE",    str(name))
@@ -822,16 +835,28 @@ class SoC(Module):
         self.logger.info(colorer("-"*80, color="bright"))
 
         # SoC Bus Interconnect ---------------------------------------------------------------------
-        bus_masters = self.bus.masters.values()
-        bus_slaves  = [(self.bus.regions[n].decoder(self.bus), s) for n, s in self.bus.slaves.items()]
-        if len(bus_masters) and len(bus_slaves):
-            self.submodules.bus_interconnect = wishbone.InterconnectShared(
-                masters        = bus_masters,
-                slaves         = bus_slaves,
-                register       = True,
-                timeout_cycles = self.bus.timeout)
-            if hasattr(self, "ctrl") and self.bus.timeout is not None:
-                self.comb += self.ctrl.bus_error.eq(self.bus_interconnect.timeout.error)
+        if len(self.bus.masters) and len(self.bus.slaves):
+            # If 1 bus_master, 1 bus_slave and no address translation, use InterconnectPointToPoint.
+            if ((len(self.bus.masters) == 1)  and
+                (len(self.bus.slaves)  == 1)  and
+                (next(iter(self.bus.regions.values())).origin == 0)):
+                self.submodules.bus_interconnect = wishbone.InterconnectPointToPoint(
+                    master = next(iter(self.bus.masters.values())),
+                    slave  = next(iter(self.bus.slaves.values())))
+            # Otherwise, use InterconnectShared.
+            else:
+                self.submodules.bus_interconnect = wishbone.InterconnectShared(
+                    masters        = self.bus.masters.values(),
+                    slaves         = [(self.bus.regions[n].decoder(self.bus), s) for n, s in self.bus.slaves.items()],
+                    register       = True,
+                    timeout_cycles = self.bus.timeout)
+                if hasattr(self, "ctrl") and self.bus.timeout is not None:
+                    if hasattr(self.ctrl, "bus_error"):
+                        self.comb += self.ctrl.bus_error.eq(self.bus_interconnect.timeout.error)
+            self.bus.logger.info("Interconnect: {} ({} <-> {}).".format(
+                colorer(self.bus_interconnect.__class__.__name__),
+                colorer(len(self.bus.masters)),
+                colorer(len(self.bus.slaves))))
 
         # SoC CSR Interconnect ---------------------------------------------------------------------
         self.submodules.csr_bankarray = csr_bus.CSRBankArray(self,
@@ -908,6 +933,8 @@ class SoC(Module):
 
     # SoC build ------------------------------------------------------------------------------------
     def build(self, *args, **kwargs):
+        self.build_name = kwargs.pop("build_name", self.platform.name)
+        kwargs.update({"build_name": self.build_name})
         return self.platform.build(self, *args, **kwargs)
 
 # LiteXSoC -----------------------------------------------------------------------------------------
@@ -997,7 +1024,7 @@ class LiteXSoC(SoC):
         self.bus.add_master(name="uartbone", master=self.uartbone.wishbone)
 
     # Add SDRAM ------------------------------------------------------------------------------------
-    def add_sdram(self, name, phy, module, origin, size=None,
+    def add_sdram(self, name, phy, module, origin, size=None, with_soc_interconnect=True,
         l2_cache_size           = 8192,
         l2_cache_min_data_width = 128,
         l2_cache_reverse        = True,
@@ -1018,6 +1045,8 @@ class LiteXSoC(SoC):
             clk_freq        = self.sys_clk_freq,
             **kwargs)
         self.csr.add("sdram")
+
+        if not with_soc_interconnect: return
 
         # Compute/Check SDRAM size
         sdram_size = 2**(module.geom_settings.bankbits +

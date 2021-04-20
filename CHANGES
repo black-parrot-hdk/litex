@@ -7,6 +7,15 @@
 
 	[> Added Features
 	------------------
+	- JTAG UART with uart_name=jtag_uart (validated on Spartan6, 7-Series, Ultrascale(+)).
+	- Add CV32E40P CPU support (ex RI5CY).
+	- Use InterconnectPointToPoint when 1 master,1 slave and no address translation.
+	- Improve WishboneBridge.
+	- Improve Diamond constraints.
+	- Add LedChaser on boards.
+	- Speedup Memtest using an LFSR.
+	- Add Microwatt CPU support (with GHDL-Yosys-plugin support for FOSS toolchains).
+	- Improve boards's programmers.
 	- BIOS history, autocomplete.
 	- Pluggable CPUs.
 	- Add nMigen dependency.
@@ -14,7 +23,7 @@
 
 	[> API changes/Deprecation
 	--------------------------
-	- NA
+	- Add --build --load arguments to targets.
 
 
 [> 2020.04, released April 28th, 2020
