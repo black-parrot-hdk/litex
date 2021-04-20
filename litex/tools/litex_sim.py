@@ -18,8 +18,10 @@ from litex.soc.integration.soc_core import *
 from litex.soc.integration.soc_sdram import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import *
+from litex.soc.cores.bitbang import *
 
 from litedram import modules as litedram_modules
+from litedram.modules import parse_spd_hexdump
 from litedram.common import *
 from litedram.phy.model import SDRAMPHYModel
 
@@ -61,6 +63,11 @@ _io = [
         Subsignal("sink_valid",   Pins(1)),
         Subsignal("sink_ready",   Pins(1)),
         Subsignal("sink_data",    Pins(8)),
+    ),
+    ("i2c", 0,
+        Subsignal("scl",     Pins(1)),
+        Subsignal("sda_out", Pins(1)),
+        Subsignal("sda_in",  Pins(1)),
     ),
 ]
 
@@ -169,6 +176,8 @@ class SimSoC(SoCCore):
         sdram_data_width      = 32,
         sdram_spd_data        = None,
         sdram_verbosity       = 0,
+        with_i2c              = False,
+        with_sdcard           = False,
         **kwargs):
         platform     = Platform()
         sys_clk_freq = int(1e6)
@@ -292,6 +301,16 @@ class SimSoC(SoCCore):
                 csr_csv      = "analyzer.csv")
             self.add_csr("analyzer")
 
+        # I2C --------------------------------------------------------------------------------------
+        if with_i2c:
+            pads = platform.request("i2c", 0)
+            self.submodules.i2c = I2CMasterSim(pads)
+            self.add_csr("i2c")
+
+        # SDCard -----------------------------------------------------------------------------------
+        if with_sdcard:
+            self.add_sdcard("sdcard", with_emulator=True)
+
 # Build --------------------------------------------------------------------------------------------
 
 def main():
@@ -305,13 +324,15 @@ def main():
     parser.add_argument("--sdram-module",         default="MT48LC16M16",   help="Select SDRAM chip")
     parser.add_argument("--sdram-data-width",     default=32,              help="Set SDRAM chip data width")
     parser.add_argument("--sdram-init",           default=None,            help="SDRAM init file")
-    parser.add_argument("--sdram-from-spd-data",  default=None,            help="Generate SDRAM module based on SPD data from file")
+    parser.add_argument("--sdram-from-spd-dump",  default=None,            help="Generate SDRAM module based on data from SPD EEPROM dump")
     parser.add_argument("--sdram-verbosity",      default=0,               help="Set SDRAM checker verbosity")
     parser.add_argument("--with-ethernet",        action="store_true",     help="Enable Ethernet support")
     parser.add_argument("--with-etherbone",       action="store_true",     help="Enable Etherbone support")
     parser.add_argument("--local-ip",             default="192.168.1.50",  help="Local IP address of SoC (default=192.168.1.50)")
     parser.add_argument("--remote-ip",            default="192.168.1.100", help="Remote IP address of TFTP server (default=192.168.1.100)")
     parser.add_argument("--with-analyzer",        action="store_true",     help="Enable Analyzer support")
+    parser.add_argument("--with-i2c",             action="store_true",     help="Enable I2C support")
+    parser.add_argument("--with-sdcard",          action="store_true",     help="Enable SDCard support")
     parser.add_argument("--trace",                action="store_true",     help="Enable Tracing")
     parser.add_argument("--trace-fst",            action="store_true",     help="Enable FST tracing (default=VCD)")
     parser.add_argument("--trace-start",          default=0,               help="Cycle to start tracing")
@@ -345,12 +366,14 @@ def main():
         soc_kwargs["sdram_module"]             = args.sdram_module
         soc_kwargs["sdram_data_width"]         = int(args.sdram_data_width)
         soc_kwargs["sdram_verbosity"]          = int(args.sdram_verbosity)
-        if args.sdram_from_spd_data:
-            with open(args.sdram_from_spd_data, "rb") as f:
-                soc_kwargs["sdram_spd_data"] = [int(b) for b in f.read()]
+        if args.sdram_from_spd_dump:
+            soc_kwargs["sdram_spd_data"] = parse_spd_hexdump(args.sdram_from_spd_dump)
 
     if args.with_ethernet or args.with_etherbone:
         sim_config.add_module("ethernet", "eth", args={"interface": "tap0", "ip": args.remote_ip})
+
+    if args.with_i2c:
+        sim_config.add_module("spdeeprom", "i2c")
 
     # SoC ------------------------------------------------------------------------------------------
     soc = SimSoC(
@@ -358,6 +381,8 @@ def main():
         with_ethernet  = args.with_ethernet,
         with_etherbone = args.with_etherbone,
         with_analyzer  = args.with_analyzer,
+        with_i2c       = args.with_i2c,
+        with_sdcard    = args.with_sdcard,
         sdram_init     = [] if args.sdram_init is None else get_mem_data(args.sdram_init, cpu_endianness),
         **soc_kwargs)
     if args.ram_init is not None:

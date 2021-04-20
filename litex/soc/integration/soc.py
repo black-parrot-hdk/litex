@@ -644,7 +644,6 @@ class SoCController(Module, AutoCSR):
 class SoC(Module):
     mem_map = {}
     def __init__(self, platform, sys_clk_freq,
-
         bus_standard         = "wishbone",
         bus_data_width       = 32,
         bus_address_width    = 32,
@@ -856,6 +855,9 @@ class SoC(Module):
                 colorer(self.bus_interconnect.__class__.__name__),
                 colorer(len(self.bus.masters)),
                 colorer(len(self.bus.slaves))))
+        self.add_constant("CONFIG_BUS_STANDARD",      self.bus.standard.upper())
+        self.add_constant("CONFIG_BUS_DATA_WIDTH",    self.bus.data_width)
+        self.add_constant("CONFIG_BUS_ADDRESS_WIDTH", self.bus.address_width)
 
         # SoC CSR Interconnect ---------------------------------------------------------------------
         self.submodules.csr_bankarray = csr_bus.CSRBankArray(self,
@@ -1241,3 +1243,73 @@ class LiteXSoC(SoC):
         spisdcard.add_clk_divider()
         setattr(self.submodules, name, spisdcard)
         self.add_csr(name)
+
+    # Add SDCard -----------------------------------------------------------------------------------
+    def add_sdcard(self, name="sdcard", with_emulator=False):
+        # Imports
+        from litesdcard.phy import SDPHY
+        from litesdcard.clocker import SDClockerS7
+        from litesdcard.core import SDCore
+        from litesdcard.bist import BISTBlockGenerator, BISTBlockChecker
+        from litesdcard.data import SDDataReader, SDDataWriter
+
+        # Emulator
+        if with_emulator:
+            from litesdcard.emulator import SDEmulator, _sdemulator_pads
+            sdcard_pads = _sdemulator_pads()
+            self.submodules.sdemulator = SDEmulator(self.platform, sdcard_pads)
+            self.add_csr("sdemulator")
+        else:
+            assert self.platform.device[:3] == "xc7" # FIXME: Only supports 7-Series for now.
+            sdcard_pads = self.platform.request(name)
+
+        # Core
+        if hasattr(sdcard_pads, "rst"):
+            self.comb += sdcard_pads.rst.eq(0)
+        if with_emulator:
+            self.clock_domains.cd_sd    = ClockDomain("sd")
+            self.clock_domains.cd_sd_fb = ClockDomain("sd_fb")
+            self.comb += self.cd_sd.clk.eq(ClockSignal())
+            self.comb += self.cd_sd_fb.clk.eq(ClockSignal())
+        else:
+            self.submodules.sdclk = SDClockerS7(sys_clk_freq=self.sys_clk_freq)
+        self.submodules.sdphy   = SDPHY(sdcard_pads, self.platform.device)
+        self.submodules.sdcore  = SDCore(self.sdphy)
+        self.submodules.sdtimer = Timer()
+        self.add_csr("sdclk")
+        self.add_csr("sdphy")
+        self.add_csr("sdcore")
+        self.add_csr("sdtimer")
+
+        # SD Card Data Reader
+        sdread_mem  = Memory(32, 512//4)
+        sdread_sram = FullMemoryWE()(wishbone.SRAM(sdread_mem, read_only=True))
+        self.submodules += sdread_sram
+        self.bus.add_slave("sdread", sdread_sram.bus, SoCRegion(size=512, cached=False))
+
+        sdread_port = sdread_sram.mem.get_port(write_capable=True);
+        self.specials += sdread_port
+        self.submodules.sddatareader = SDDataReader(port=sdread_port, endianness=self.cpu.endianness)
+        self.add_csr("sddatareader")
+        self.comb += self.sdcore.source.connect(self.sddatareader.sink)
+
+        # SD Card Data Writer
+        sdwrite_mem  = Memory(32, 512//4)
+        sdwrite_sram = FullMemoryWE()(wishbone.SRAM(sdwrite_mem, read_only=False))
+        self.submodules += sdwrite_sram
+        self.bus.add_slave("sdwrite", sdwrite_sram.bus, SoCRegion(size=512, cached=False))
+
+        sdwrite_port = sdwrite_sram.mem.get_port(write_capable=False, async_read=True, mode=READ_FIRST);
+        self.specials += sdwrite_port
+        self.submodules.sddatawriter = SDDataWriter(port=sdwrite_port, endianness=self.cpu.endianness)
+        self.add_csr("sddatawriter")
+        self.comb += self.sddatawriter.source.connect(self.sdcore.sink),
+
+        # Timing constraints
+        if not with_emulator:
+            self.platform.add_period_constraint(self.sdclk.cd_sd.clk,    1e9/self.sys_clk_freq)
+            self.platform.add_period_constraint(self.sdclk.cd_sd_fb.clk, 1e9/self.sys_clk_freq)
+            self.platform.add_false_path_constraints(
+                self.crg.cd_sys.clk,
+                self.sdclk.cd_sd.clk,
+                self.sdclk.cd_sd_fb.clk)
