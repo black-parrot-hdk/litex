@@ -8,8 +8,9 @@
 import os
 from os import path
 
-from litex import get_data_mod
 from migen import *
+
+from litex import get_data_mod
 
 from litex.soc.interconnect import wishbone
 from litex.soc.interconnect.csr import *
@@ -19,7 +20,8 @@ import os
 
 
 CPU_VARIANTS = {
-    "linux":    "VexRiscv",
+    "standard": "VexRiscv",
+    "linux":    "VexRiscv", # Similar to standard.
 }
 
 class Open(Signal): pass
@@ -35,28 +37,33 @@ class VexRiscvSMP(CPU):
     nop                  = "nop"
     io_regions           = {0x80000000: 0x80000000} # origin, length
 
-    cpu_count      = 1
-    dcache_size    = 4096
-    icache_size    = 4096
-    dcache_ways    = 1
-    icache_ways    = 1
-    coherent_dma   = False
-    litedram_width = 32
-    dcache_width   = 32
-    icache_width   = 32
+    cpu_count            = 1
+    dcache_size          = 4096
+    icache_size          = 4096
+    dcache_ways          = 1
+    icache_ways          = 1
+    coherent_dma         = False
+    litedram_width       = 32
+    dcache_width         = 32
+    icache_width         = 32
+    aes_instruction      = False
+    out_of_order_decoder = True
+    wishbone_memory      = False
 
     @staticmethod
     def args_fill(parser):
-        parser.add_argument("--cpu-count",            default=1,           help="")
-        parser.add_argument("--with-coherent-dma",    action='store_true', help="")
-        parser.add_argument("--without-coherent-dma", action='store_true', help="")
-        parser.add_argument("--dcache-width",         default=None,        help="L1 data cache bus width")
-        parser.add_argument("--icache-width",         default=None,        help="L1 instruction cache bus width")
-        parser.add_argument("--dcache-size",          default=None,        help="L1 data cache size in byte per CPU")
-        parser.add_argument("--dcache-ways",          default=None,        help="L1 data cache ways per CPU")
-        parser.add_argument("--icache-size",          default=None,        help="L1 instruction cache size in byte per CPU")
-        parser.add_argument("--icache-ways",          default=None,        help="L1 instruction cache ways per CPU")
-
+        parser.add_argument("--cpu-count",                    default=1,           help="Number of CPU(s) in the cluster.", type=int)
+        parser.add_argument("--with-coherent-dma",            action="store_true", help="Enable Coherent DMA Slave interface.")
+        parser.add_argument("--without-coherent-dma",         action="store_true", help="Disable Coherent DMA Slave interface.")
+        parser.add_argument("--dcache-width",                 default=None,        help="L1 data cache bus width.")
+        parser.add_argument("--icache-width",                 default=None,        help="L1 instruction cache bus width.")
+        parser.add_argument("--dcache-size",                  default=None,        help="L1 data cache size in byte per CPU.")
+        parser.add_argument("--dcache-ways",                  default=None,        help="L1 data cache ways per CPU.")
+        parser.add_argument("--icache-size",                  default=None,        help="L1 instruction cache size in byte per CPU.")
+        parser.add_argument("--icache-ways",                  default=None,        help="L1 instruction cache ways per CPU")
+        parser.add_argument("--aes-instruction",              default=None,        help="Enable AES instruction acceleration.")
+        parser.add_argument("--without-out-of-order-decoder", action="store_true", help="Reduce area at cost of peripheral access speed")
+        parser.add_argument("--with-wishbone-memory"        , action="store_true", help="Disable native LiteDRAM interface")
 
     @staticmethod
     def args_read(args):
@@ -69,14 +76,18 @@ class VexRiscvSMP(CPU):
             VexRiscvSMP.dcache_ways  = 2
             VexRiscvSMP.icache_ways  = 2
             VexRiscvSMP.coherent_dma = True
-        if(args.with_coherent_dma): VexRiscvSMP.coherent_dma    = bool(True)
-        if(args.without_coherent_dma): VexRiscvSMP.coherent_dma = bool(False)
-        if(args.dcache_width): VexRiscvSMP.dcache_width = int(args.dcache_width)
-        if(args.icache_width): VexRiscvSMP.icache_width = int(args.icache_width)
-        if(args.dcache_size): VexRiscvSMP.dcache_size  = int(args.dcache_size)
-        if(args.icache_size): VexRiscvSMP.icache_size  = int(args.icache_size)
-        if(args.dcache_ways): VexRiscvSMP.dcache_ways  = int(args.dcache_ways)
-        if(args.icache_ways): VexRiscvSMP.icache_ways  = int(args.icache_ways)
+        if(args.with_coherent_dma):            VexRiscvSMP.coherent_dma          = bool(True)
+        if(args.without_coherent_dma):         VexRiscvSMP.coherent_dma          = bool(False)
+        if(args.dcache_width):                 VexRiscvSMP.dcache_width          = int(args.dcache_width)
+        if(args.icache_width):                 VexRiscvSMP.icache_width          = int(args.icache_width)
+        if(args.dcache_size):                  VexRiscvSMP.dcache_size           = int(args.dcache_size)
+        if(args.icache_size):                  VexRiscvSMP.icache_size           = int(args.icache_size)
+        if(args.dcache_ways):                  VexRiscvSMP.dcache_ways           = int(args.dcache_ways)
+        if(args.icache_ways):                  VexRiscvSMP.icache_ways           = int(args.icache_ways)
+        if(args.aes_instruction):              VexRiscvSMP.aes_instruction       = bool(args.aes_instruction)
+        if(args.without_out_of_order_decoder): VexRiscvSMP.out_of_order_decoder  = False
+        if(args.with_wishbone_memory): VexRiscvSMP.wishbone_memory               = True
+
 
     @property
     def mem_map(self):
@@ -86,6 +97,7 @@ class VexRiscvSMP(CPU):
             "main_ram": 0x40000000,
             "csr":      0xf0000000,
             "clint":    0xf0010000,
+            "plic":     0xf0c00000,
         }
 
     @property
@@ -97,6 +109,7 @@ class VexRiscvSMP(CPU):
 
     @staticmethod
     def generate_cluster_name():
+        ldw = f"Ldw{VexRiscvSMP.litedram_width}"
         VexRiscvSMP.cluster_name = f"VexRiscvLitexSmpCluster_" \
         f"Cc{VexRiscvSMP.cpu_count}"    \
         "_" \
@@ -107,9 +120,11 @@ class VexRiscvSMP(CPU):
         f"Dw{VexRiscvSMP.dcache_width}" \
         f"Ds{VexRiscvSMP.dcache_size}"  \
         f"Dy{VexRiscvSMP.dcache_ways}"  \
-        "_" \
-        f"Ldw{VexRiscvSMP.litedram_width}" \
-        f"{'_Cdma' if VexRiscvSMP.coherent_dma else ''}"
+        f"{'_'+ldw if not VexRiscvSMP.wishbone_memory  else ''}" \
+        f"{'_Cdma' if VexRiscvSMP.coherent_dma         else ''}" \
+        f"{'_Aes'  if VexRiscvSMP.aes_instruction      else ''}" \
+        f"{'_Ood'  if VexRiscvSMP.out_of_order_decoder else ''}" \
+        f"{'_Wm'   if VexRiscvSMP.wishbone_memory      else ''}"
 
     @staticmethod
     def generate_default_configs():
@@ -184,11 +199,15 @@ class VexRiscvSMP(CPU):
         gen_args.append(f"--dcache-ways={VexRiscvSMP.dcache_ways}")
         gen_args.append(f"--icache-ways={VexRiscvSMP.icache_ways}")
         gen_args.append(f"--litedram-width={VexRiscvSMP.litedram_width}")
+        gen_args.append(f"--aes-instruction={VexRiscvSMP.aes_instruction}")
+        gen_args.append(f"--out-of-order-decoder={VexRiscvSMP.out_of_order_decoder}")
+        gen_args.append(f"--wishbone-memory={VexRiscvSMP.wishbone_memory}")
         gen_args.append(f"--netlist-name={VexRiscvSMP.cluster_name}")
         gen_args.append(f"--netlist-directory={vdir}")
 
         cmd = 'cd {path} && sbt "runMain vexriscv.demo.smp.VexRiscvLitexSmpClusterCmdGen {args}"'.format(path=os.path.join(vdir, "ext", "VexRiscv"), args=" ".join(gen_args))
-        os.system(cmd)
+        if os.system(cmd) != 0:
+            raise OSError('Failed to run sbt')
 
     def __init__(self, platform, variant):
         self.platform         = platform
@@ -205,8 +224,6 @@ class VexRiscvSMP(CPU):
         self.jtag_tdi         = Signal()
         self.interrupt        = Signal(32)
         self.pbus             = pbus    = wishbone.Interface()
-        self.cbus             = cbus    = wishbone.Interface()
-        self.plicbus          = plicbus = wishbone.Interface()
 
         self.periph_buses     = [pbus]
         self.memory_buses     = [] # Added dynamically
@@ -241,25 +258,7 @@ class VexRiscvSMP(CPU):
             o_peripheral_SEL         = pbus.sel,
             i_peripheral_ERR         = pbus.err,
             o_peripheral_CTI         = pbus.cti,
-            o_peripheral_BTE         = pbus.bte,
-
-            # CLINT Bus (Slave)
-            i_clintWishbone_CYC      = cbus.cyc,
-            i_clintWishbone_STB      = cbus.stb,
-            o_clintWishbone_ACK      = cbus.ack,
-            i_clintWishbone_WE       = cbus.we,
-            i_clintWishbone_ADR      = cbus.adr,
-            o_clintWishbone_DAT_MISO = cbus.dat_r,
-            i_clintWishbone_DAT_MOSI = cbus.dat_w,
-
-            # PLIC Bus (Slave)
-            i_plicWishbone_CYC       = plicbus.cyc,
-            i_plicWishbone_STB       = plicbus.stb,
-            o_plicWishbone_ACK       = plicbus.ack,
-            i_plicWishbone_WE        = plicbus.we,
-            i_plicWishbone_ADR       = plicbus.adr,
-            o_plicWishbone_DAT_MISO  = plicbus.dat_r,
-            i_plicWishbone_DAT_MOSI  = plicbus.dat_w
+            o_peripheral_BTE         = pbus.bte
         )
 
         if VexRiscvSMP.coherent_dma:
@@ -300,44 +299,74 @@ class VexRiscvSMP(CPU):
         platform.add_source(os.path.join(vdir, "RamXilinx.v"), "verilog")
         platform.add_source(os.path.join(vdir,  self.cluster_name + ".v"), "verilog")
 
+    def add_soc_components(self, soc, soc_region_cls):
+        # Define number of CPUs
+        soc.add_config("CPU_COUNT", VexRiscvSMP.cpu_count)
+
+        # Add PLIC as Bus Slave
+        self.plicbus = plicbus  = wishbone.Interface()
+        self.cpu_params.update(
+            i_plicWishbone_CYC       = plicbus.cyc,
+            i_plicWishbone_STB       = plicbus.stb,
+            o_plicWishbone_ACK       = plicbus.ack,
+            i_plicWishbone_WE        = plicbus.we,
+            i_plicWishbone_ADR       = plicbus.adr,
+            o_plicWishbone_DAT_MISO  = plicbus.dat_r,
+            i_plicWishbone_DAT_MOSI  = plicbus.dat_w
+        )
+        soc.bus.add_slave("plic", self.plicbus, region=soc_region_cls(origin=soc.mem_map.get("plic"), size=0x400000, cached=False))
+
+        # Add CLINT as Bus Slave
+        self.clintbus = clintbus = wishbone.Interface()
+        self.cpu_params.update(
+            i_clintWishbone_CYC      = clintbus.cyc,
+            i_clintWishbone_STB      = clintbus.stb,
+            o_clintWishbone_ACK      = clintbus.ack,
+            i_clintWishbone_WE       = clintbus.we,
+            i_clintWishbone_ADR      = clintbus.adr,
+            o_clintWishbone_DAT_MISO = clintbus.dat_r,
+            i_clintWishbone_DAT_MOSI = clintbus.dat_w,
+        )
+        soc.bus.add_slave("clint", clintbus, region=soc_region_cls(origin=soc.mem_map.get("clint"), size=0x10000, cached=False))
+
     def add_memory_buses(self, address_width, data_width):
         VexRiscvSMP.litedram_width = data_width
 
         VexRiscvSMP.generate_cluster_name()
 
         from litedram.common import LiteDRAMNativePort
-        ibus = LiteDRAMNativePort(mode="both", address_width=32, data_width=VexRiscvSMP.litedram_width)
-        dbus = LiteDRAMNativePort(mode="both", address_width=32, data_width=VexRiscvSMP.litedram_width)
-        self.memory_buses.append(ibus)
-        self.memory_buses.append(dbus)
-        self.cpu_params.update(
-            # Instruction Memory Bus (Master)
-            o_iBridge_dram_cmd_valid          = ibus.cmd.valid,
-            i_iBridge_dram_cmd_ready          = ibus.cmd.ready,
-            o_iBridge_dram_cmd_payload_we     = ibus.cmd.we,
-            o_iBridge_dram_cmd_payload_addr   = ibus.cmd.addr,
-            o_iBridge_dram_wdata_valid        = ibus.wdata.valid,
-            i_iBridge_dram_wdata_ready        = ibus.wdata.ready,
-            o_iBridge_dram_wdata_payload_data = ibus.wdata.data,
-            o_iBridge_dram_wdata_payload_we   = ibus.wdata.we,
-            i_iBridge_dram_rdata_valid        = ibus.rdata.valid,
-            o_iBridge_dram_rdata_ready        = ibus.rdata.ready,
-            i_iBridge_dram_rdata_payload_data = ibus.rdata.data,
+        if(not VexRiscvSMP.wishbone_memory):
+            ibus = LiteDRAMNativePort(mode="both", address_width=32, data_width=VexRiscvSMP.litedram_width)
+            dbus = LiteDRAMNativePort(mode="both", address_width=32, data_width=VexRiscvSMP.litedram_width)
+            self.memory_buses.append(ibus)
+            self.memory_buses.append(dbus)
+            self.cpu_params.update(
+                # Instruction Memory Bus (Master)
+                o_iBridge_dram_cmd_valid          = ibus.cmd.valid,
+                i_iBridge_dram_cmd_ready          = ibus.cmd.ready,
+                o_iBridge_dram_cmd_payload_we     = ibus.cmd.we,
+                o_iBridge_dram_cmd_payload_addr   = ibus.cmd.addr,
+                o_iBridge_dram_wdata_valid        = ibus.wdata.valid,
+                i_iBridge_dram_wdata_ready        = ibus.wdata.ready,
+                o_iBridge_dram_wdata_payload_data = ibus.wdata.data,
+                o_iBridge_dram_wdata_payload_we   = ibus.wdata.we,
+                i_iBridge_dram_rdata_valid        = ibus.rdata.valid,
+                o_iBridge_dram_rdata_ready        = ibus.rdata.ready,
+                i_iBridge_dram_rdata_payload_data = ibus.rdata.data,
 
-            # Data Memory Bus (Master)
-            o_dBridge_dram_cmd_valid          = dbus.cmd.valid,
-            i_dBridge_dram_cmd_ready          = dbus.cmd.ready,
-            o_dBridge_dram_cmd_payload_we     = dbus.cmd.we,
-            o_dBridge_dram_cmd_payload_addr   = dbus.cmd.addr,
-            o_dBridge_dram_wdata_valid        = dbus.wdata.valid,
-            i_dBridge_dram_wdata_ready        = dbus.wdata.ready,
-            o_dBridge_dram_wdata_payload_data = dbus.wdata.data,
-            o_dBridge_dram_wdata_payload_we   = dbus.wdata.we,
-            i_dBridge_dram_rdata_valid        = dbus.rdata.valid,
-            o_dBridge_dram_rdata_ready        = dbus.rdata.ready,
-            i_dBridge_dram_rdata_payload_data = dbus.rdata.data,
-        )
-
+                # Data Memory Bus (Master)
+                o_dBridge_dram_cmd_valid          = dbus.cmd.valid,
+                i_dBridge_dram_cmd_ready          = dbus.cmd.ready,
+                o_dBridge_dram_cmd_payload_we     = dbus.cmd.we,
+                o_dBridge_dram_cmd_payload_addr   = dbus.cmd.addr,
+                o_dBridge_dram_wdata_valid        = dbus.wdata.valid,
+                i_dBridge_dram_wdata_ready        = dbus.wdata.ready,
+                o_dBridge_dram_wdata_payload_data = dbus.wdata.data,
+                o_dBridge_dram_wdata_payload_we   = dbus.wdata.we,
+                i_dBridge_dram_rdata_valid        = dbus.rdata.valid,
+                o_dBridge_dram_rdata_ready        = dbus.rdata.ready,
+                i_dBridge_dram_rdata_payload_data = dbus.rdata.data,
+            )
 
     def do_finalize(self):
         assert hasattr(self, "reset_address")
@@ -345,3 +374,4 @@ class VexRiscvSMP(CPU):
 
         # Add verilog sources
         self.add_sources(self.platform)
+

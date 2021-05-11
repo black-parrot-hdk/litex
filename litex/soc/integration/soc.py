@@ -20,6 +20,7 @@ from litex.soc.cores.spi_flash import SpiFlash
 from litex.soc.cores.spi import SPIMaster
 
 from litex.soc.interconnect.csr import *
+from litex.soc.interconnect.csr_eventmanager import *
 from litex.soc.interconnect import csr_bus
 from litex.soc.interconnect import stream
 from litex.soc.interconnect import wishbone
@@ -619,11 +620,12 @@ class SoCIRQHandler(SoCLocHandler):
         SoCLocHandler.__init__(self, "IRQ", n_locs=n_irqs)
         self.logger = logging.getLogger("SoCIRQHandler")
         self.logger.info("Creating IRQ Handler...")
+        self.enabled = False
 
         # Check IRQ Number
         if n_irqs > 32:
             self.logger.error("Unsupported IRQs number: {} supporteds: {:s}".format(
-                colorer(n, color="red"), colorer("Up to 32", color="green")))
+                colorer(n_irqs, color="red"), colorer("Up to 32", color="green")))
             raise
 
         # Create IRQ Handler
@@ -635,6 +637,19 @@ class SoCIRQHandler(SoCLocHandler):
             self.add(name, n)
 
         self.logger.info("IRQ Handler {}.".format(colorer("created", color="green")))
+
+    # Enable ---------------------------------------------------------------------------------------
+    def enable(self):
+        self.enabled = True
+
+    # Add ------------------------------------------------------------------------------------------
+    def add(self, name, *args, **kwargs):
+        if self.enabled:
+            SoCLocHandler.add(self, name, *args, **kwargs)
+        else:
+            self.logger.error("Attempted to add {} IRQ but SoC does {}.".format(
+                colorer(name), colorer("not support IRQs", color="red")))
+            raise
 
     # Str ------------------------------------------------------------------------------------------
     def __str__(self):
@@ -652,7 +667,7 @@ class SoCController(Module, AutoCSR):
         with_errors   = True):
 
         if with_reset:
-            self._reset = CSRStorage(1, description="""Write a ``1`` to this register to reset the SoC.""")
+            self._reset = CSRStorage(1, description="""Any write to this register will reset the SoC.""")
         if with_scratch:
             self._scratch = CSRStorage(32, reset=0x12345678, description="""
                 Use this register as a scratch space to verify that software read/write accesses
@@ -858,6 +873,7 @@ class SoC(Module):
                 self.bus.add_master(name="cpu_bus{}".format(n), master=cpu_bus)
             self.csr.add("cpu", use_loc_if_exists=True)
             if hasattr(self.cpu, "interrupt"):
+                self.irq.enable()
                 for name, loc in self.cpu.interrupts.items():
                     self.irq.add(name, loc)
                 self.add_config("CPU_HAS_INTERRUPT")
@@ -879,6 +895,11 @@ class SoC(Module):
                 if hasattr(self.ctrl, "reset"):
                     self.comb += self.cpu.reset.eq(self.ctrl.reset)
             self.add_config("CPU_RESET_ADDR", reset_address)
+
+        # Add CPU's SoC components (if any)
+        if hasattr(self.cpu, "add_soc_components"):
+            self.cpu.add_soc_components(soc=self, soc_region_cls=SoCRegion) # FIXME: avoid passing SoCRegion.
+
         # Add constants
         self.add_config("CPU_TYPE",    str(name))
         self.add_config("CPU_VARIANT", str(variant.split('+')[0]))
@@ -890,7 +911,7 @@ class SoC(Module):
         self.check_if_exists(name)
         setattr(self.submodules, name, Timer())
         self.csr.add(name, use_loc_if_exists=True)
-        if hasattr(self.cpu, "interrupt"):
+        if self.irq.enabled:
             self.irq.add(name, use_loc_if_exists=True)
 
     # SoC finalization -----------------------------------------------------------------------------
@@ -918,7 +939,8 @@ class SoC(Module):
         # Connect SoCController's reset to CRG's reset if presents.
         if hasattr(self, "ctrl") and hasattr(self, "crg"):
             if hasattr(self.ctrl, "_reset") and hasattr(self.crg, "rst"):
-                self.comb += self.crg.rst.eq(self.ctrl._reset.re)
+                if isinstance(self.crg.rst, Signal):
+                    self.comb += self.crg.rst.eq(self.ctrl._reset.re)
 
         # SoC CSR bridge ---------------------------------------------------------------------------
         # FIXME: for now, use registered CSR bridge when SDRAM is present; find the best compromise.
@@ -1032,20 +1054,19 @@ class SoC(Module):
                 raise
 
         # SoC IRQ Interconnect ---------------------------------------------------------------------
-        if hasattr(self, "cpu"):
-            if hasattr(self.cpu, "interrupt"):
-                for name, loc in sorted(self.irq.locs.items()):
-                    if name in self.cpu.interrupts.keys():
-                        continue
-                    if hasattr(self, name):
-                        module = getattr(self, name)
-                        if not hasattr(module, "ev"):
-                            self.logger.error("EventManager {} in {} SubModule.".format(
-                                colorer("not found", color="red"),
-                                colorer(name)))
-                            raise
-                        self.comb += self.cpu.interrupt[loc].eq(module.ev.irq)
-                    self.add_constant(name + "_INTERRUPT", loc)
+        if hasattr(self, "cpu") and hasattr(self.cpu, "interrupt"):
+            for name, loc in sorted(self.irq.locs.items()):
+                if name in self.cpu.interrupts.keys():
+                    continue
+                if hasattr(self, name):
+                    module = getattr(self, name)
+                    if not hasattr(module, "ev"):
+                        self.logger.error("EventManager {} in {} SubModule.".format(
+                            colorer("not found", color="red"),
+                            colorer(name)))
+                        raise
+                    self.comb += self.cpu.interrupt[loc].eq(module.ev.irq)
+                self.add_constant(name + "_INTERRUPT", loc)
 
     # SoC build ------------------------------------------------------------------------------------
     def build(self, *args, **kwargs):
@@ -1061,6 +1082,7 @@ class LiteXSoC(SoC):
         self.check_if_exists(name)
         if with_build_time:
             identifier += " " + build_time()
+            self.add_config("WITH_BUILD_TIME")
         setattr(self.submodules, name, Identifier(identifier))
         self.csr.add(name + "_mem", use_loc_if_exists=True)
 
@@ -1080,30 +1102,41 @@ class LiteXSoC(SoC):
 
         # Crossover
         elif name in ["crossover"]:
-            self.submodules.uart = uart.UARTCrossover()
+            self.submodules.uart = uart.UARTCrossover(
+                tx_fifo_depth = fifo_depth,
+                rx_fifo_depth = fifo_depth)
+
+        # Crossover + Bridge
+        elif name in ["crossover+bridge"]:
+            self.add_uartbone(baudrate=baudrate)
+            self.submodules.uart = uart.UARTCrossover(
+                tx_fifo_depth = fifo_depth,
+                rx_fifo_depth = fifo_depth)
 
         # Model/Sim
         elif name in ["model", "sim"]:
             self.submodules.uart_phy = uart.RS232PHYModel(self.platform.request("serial"))
-            self.submodules.uart = ResetInserter()(uart.UART(self.uart_phy,
+            self.submodules.uart = uart.UART(self.uart_phy,
                 tx_fifo_depth = fifo_depth,
-                rx_fifo_depth = fifo_depth))
+                rx_fifo_depth = fifo_depth)
 
         # JTAG Atlantic
         elif name in ["jtag_atlantic"]:
             from litex.soc.cores.jtag import JTAGAtlantic
             self.submodules.uart_phy = JTAGAtlantic()
-            self.submodules.uart = ResetInserter()(uart.UART(self.uart_phy,
+            self.submodules.uart = uart.UART(self.uart_phy,
                 tx_fifo_depth = fifo_depth,
-                rx_fifo_depth = fifo_depth))
+                rx_fifo_depth = fifo_depth)
 
         # JTAG UART
         elif name in ["jtag_uart"]:
             from litex.soc.cores.jtag import JTAGPHY
-            self.submodules.uart_phy = JTAGPHY(device=self.platform.device)
-            self.submodules.uart = ResetInserter()(uart.UART(self.uart_phy,
+            self.clock_domains.cd_sys_jtag = ClockDomain()          # Run JTAG-UART in sys_jtag clock domain similar to
+            self.comb += self.cd_sys_jtag.clk.eq(ClockSignal("sys")) # sys clock domain but with rst disconnected.
+            self.submodules.uart_phy = JTAGPHY(device=self.platform.device, clock_domain="sys_jtag")
+            self.submodules.uart = uart.UART(self.uart_phy,
                 tx_fifo_depth = fifo_depth,
-                rx_fifo_depth = fifo_depth))
+                rx_fifo_depth = fifo_depth)
 
         # USB ACM (with ValentyUSB core)
         elif name in ["usb_acm"]:
@@ -1111,7 +1144,9 @@ class LiteXSoC(SoC):
             import valentyusb.usbcore.cpu.cdc_eptri as cdc_eptri
             usb_pads = self.platform.request("usb")
             usb_iobuf = usbio.IoBuf(usb_pads.d_p, usb_pads.d_n, usb_pads.pullup)
-            self.submodules.uart = cdc_eptri.CDCUsb(usb_iobuf)
+            self.clock_domains.cd_sys_usb = ClockDomain()           # Run USB ACM in sys_usb clock domain similar to
+            self.comb += self.cd_sys_usb.clk.eq(ClockSignal("sys")) # sys clock domain but with rst disconnected.
+            self.submodules.uart = ClockDomainsRenamer("sys_usb")(cdc_eptri.CDCUsb(usb_iobuf))
 
         # Classic UART
         else:
@@ -1119,13 +1154,13 @@ class LiteXSoC(SoC):
                 pads     = self.platform.request(name),
                 clk_freq = self.sys_clk_freq,
                 baudrate = baudrate)
-            self.submodules.uart = ResetInserter()(uart.UART(self.uart_phy,
+            self.submodules.uart = uart.UART(self.uart_phy,
                 tx_fifo_depth = fifo_depth,
-                rx_fifo_depth = fifo_depth))
+                rx_fifo_depth = fifo_depth)
 
         self.csr.add("uart_phy", use_loc_if_exists=True)
         self.csr.add("uart", use_loc_if_exists=True)
-        if hasattr(self.cpu, "interrupt"):
+        if self.irq.enabled:
             self.irq.add("uart", use_loc_if_exists=True)
         else:
             self.add_constant("UART_POLLING")
@@ -1133,12 +1168,20 @@ class LiteXSoC(SoC):
     # Add UARTbone ---------------------------------------------------------------------------------
     def add_uartbone(self, name="serial", clk_freq=None, baudrate=115200, cd="sys"):
         from litex.soc.cores import uart
-        self.submodules.uartbone = uart.UARTBone(
-            pads     = self.platform.request(name),
-            clk_freq = clk_freq if clk_freq is not None else self.sys_clk_freq,
-            baudrate = baudrate,
-            cd       = cd)
+        if clk_freq is None:
+            clk_freq = self.sys_clk_freq
+        self.submodules.uartbone_phy = uart.UARTPHY(self.platform.request(name), clk_freq, baudrate)
+        self.csr.add("uartbone_phy")
+        self.submodules.uartbone = uart.UARTBone(phy=self.uartbone_phy, clk_freq=clk_freq, cd=cd)
         self.bus.add_master(name="uartbone", master=self.uartbone.wishbone)
+
+    # Add JTAGbone ---------------------------------------------------------------------------------
+    def add_jtagbone(self):
+        from litex.soc.cores import uart
+        from litex.soc.cores.jtag import JTAGPHY
+        self.submodules.jtagbone_phy = JTAGPHY(device=self.platform.device)
+        self.submodules.jtagbone = uart.UARTBone(phy=self.jtagbone_phy, clk_freq=self.sys_clk_freq)
+        self.bus.add_master(name="jtagbone", master=self.jtagbone.wishbone)
 
     # Add SDRAM ------------------------------------------------------------------------------------
     def add_sdram(self, name, phy, module, origin, size=None, with_bist=False, with_soc_interconnect=True,
@@ -1302,22 +1345,28 @@ class LiteXSoC(SoC):
                 port         = port,
                 base_address = self.bus.regions["main_ram"].origin)
 
-
     # Add Ethernet ---------------------------------------------------------------------------------
-    def add_ethernet(self, name="ethmac", phy=None):
+    def add_ethernet(self, name="ethmac", phy=None, phy_cd="eth", software_debug=False):
         # Imports
         from liteeth.mac import LiteEthMAC
+
         # MAC
         ethmac = LiteEthMAC(
-            phy        = phy,
-            dw         = 32,
-            interface  = "wishbone",
-            endianness = self.cpu.endianness)
+            phy               = phy,
+            dw                = 32,
+            interface         = "wishbone",
+            endianness        = self.cpu.endianness,
+            with_preamble_crc = not software_debug)
+        ethmac = ClockDomainsRenamer({
+            "eth_tx": phy_cd + "_tx",
+            "eth_rx": phy_cd + "_rx"})(ethmac)
         setattr(self.submodules, name, ethmac)
         ethmac_region = SoCRegion(origin=self.mem_map.get(name, None), size=0x2000, cached=False)
         self.bus.add_slave(name=name, slave=ethmac.bus, region=ethmac_region)
         self.csr.add(name, use_loc_if_exists=True)
-        self.add_interrupt(name)
+        if self.irq.enabled:
+            self.irq.add(name, use_loc_if_exists=True)
+
         # Timing constraints
         if hasattr(phy, "crg"):
             eth_rx_clk = phy.crg.cd_eth_rx.clk
@@ -1332,21 +1381,30 @@ class LiteXSoC(SoC):
             eth_rx_clk,
             eth_tx_clk)
 
+        # Software Debug
+        if software_debug:
+            self.add_constant("ETH_UDP_TX_DEBUG")
+            self.add_constant("ETH_UDP_RX_DEBUG")
+
     # Add Etherbone --------------------------------------------------------------------------------
-    def add_etherbone(self, name="etherbone", phy=None,
-        mac_address = 0x10e2d5000000,
-        ip_address  = "192.168.1.50",
-        udp_port    = 1234):
+    def add_etherbone(self, name="etherbone", phy=None, phy_cd="eth",
+        mac_address  = 0x10e2d5000000,
+        ip_address   = "192.168.1.50",
+        udp_port     = 1234,
+        buffer_depth = 4):
         # Imports
         from liteeth.core import LiteEthUDPIPCore
         from liteeth.frontend.etherbone import LiteEthEtherbone
+        from liteeth.phy.model import LiteEthPHYModel
         # Core
         ethcore = LiteEthUDPIPCore(
             phy         = phy,
             mac_address = mac_address,
             ip_address  = ip_address,
             clk_freq    = self.clk_freq)
-        ethcore = ClockDomainsRenamer("eth_tx")(ethcore)
+        ethcore = ClockDomainsRenamer({
+            "eth_tx": phy_cd + "_tx",
+            "eth_rx": phy_cd + "_rx"})(ethcore)
         self.submodules.ethcore = ethcore
 
         # Clock domain renaming
@@ -1355,9 +1413,10 @@ class LiteXSoC(SoC):
         self.comb += self.cd_etherbone.rst.eq(ResetSignal("sys"))
 
         # Etherbone
-        etherbone = LiteEthEtherbone(ethcore.udp, udp_port, cd="etherbone")
+        etherbone = LiteEthEtherbone(ethcore.udp, udp_port, buffer_depth=buffer_depth, cd="etherbone")
         setattr(self.submodules, name, etherbone)
         self.add_wb_master(etherbone.wishbone.bus)
+
         # Timing constraints
         if hasattr(phy, "crg"):
             eth_rx_clk = phy.crg.cd_eth_rx.clk
@@ -1365,12 +1424,13 @@ class LiteXSoC(SoC):
         else:
             eth_rx_clk = phy.cd_eth_rx.clk
             eth_tx_clk = phy.cd_eth_tx.clk
-        self.platform.add_period_constraint(eth_rx_clk, 1e9/phy.rx_clk_freq)
-        self.platform.add_period_constraint(eth_tx_clk, 1e9/phy.tx_clk_freq)
-        self.platform.add_false_path_constraints(
-            self.crg.cd_sys.clk,
-            eth_rx_clk,
-            eth_tx_clk)
+        if not isinstance(phy, LiteEthPHYModel):
+            self.platform.add_period_constraint(eth_rx_clk, 1e9/phy.rx_clk_freq)
+            self.platform.add_period_constraint(eth_tx_clk, 1e9/phy.tx_clk_freq)
+            self.platform.add_false_path_constraints(
+                self.crg.cd_sys.clk,
+                eth_rx_clk,
+                eth_tx_clk)
 
     # Add SPI Flash --------------------------------------------------------------------------------
     def add_spi_flash(self, name="spiflash", mode="4x", dummy_cycles=None, clk_freq=None):
@@ -1390,7 +1450,7 @@ class LiteXSoC(SoC):
         self.csr.add(name, use_loc_if_exists=True)
 
     # Add SPI SDCard -------------------------------------------------------------------------------
-    def add_spi_sdcard(self, name="spisdcard", spi_clk_freq=400e3):
+    def add_spi_sdcard(self, name="spisdcard", spi_clk_freq=400e3, software_debug=False):
         pads = self.platform.request(name)
         if hasattr(pads, "rst"):
             self.comb += pads.rst.eq(0)
@@ -1399,8 +1459,11 @@ class LiteXSoC(SoC):
         setattr(self.submodules, name, spisdcard)
         self.csr.add(name, use_loc_if_exists=True)
 
+        if software_debug:
+            self.add_constant("SPISDCARD_DEBUG")
+
     # Add SDCard -----------------------------------------------------------------------------------
-    def add_sdcard(self, name="sdcard", mode="read+write", use_emulator=False):
+    def add_sdcard(self, name="sdcard", mode="read+write", use_emulator=False, software_debug=False):
         assert mode in ["read", "write", "read+write"]
         # Imports
         from litesdcard.emulator import SDEmulator
@@ -1417,7 +1480,7 @@ class LiteXSoC(SoC):
             sdcard_pads = self.platform.request(name)
 
         # Core
-        self.submodules.sdphy  = SDPHY(sdcard_pads, self.platform.device, self.clk_freq)
+        self.submodules.sdphy  = SDPHY(sdcard_pads, self.platform.device, self.clk_freq, cmd_timeout=10e-1, data_timeout=10e-1)
         self.submodules.sdcore = SDCore(self.sdphy)
         self.csr.add("sdphy", use_loc_if_exists=True)
         self.csr.add("sdcore", use_loc_if_exists=True)
@@ -1439,6 +1502,23 @@ class LiteXSoC(SoC):
             dma_bus = self.bus if not hasattr(self, "dma_bus") else self.dma_bus
             dma_bus.add_master("sdmem2block", master=bus)
             self.csr.add("sdmem2block", use_loc_if_exists=True)
+
+        # Interrupts
+        self.submodules.sdirq = EventManager()
+        self.sdirq.card_detect   = EventSourcePulse(description="SDCard has been ejected/inserted.")
+        self.sdirq.block2mem_dma = EventSourcePulse(description="Block2Mem DMA terminated.")
+        self.sdirq.mem2block_dma = EventSourcePulse(description="Mem2Block DMA terminated.")
+        self.sdirq.finalize()
+        self.csr.add("sdirq")
+        self.comb += [
+            self.sdirq.card_detect.trigger.eq(self.sdphy.card_detect_irq),
+            self.sdirq.block2mem_dma.trigger.eq(self.sdblock2mem.irq),
+            self.sdirq.mem2block_dma.trigger.eq(self.sdmem2block.irq),
+        ]
+
+        # Software Debug
+        if software_debug:
+            self.add_constant("SDCARD_DEBUG")
 
     # Add SATA -------------------------------------------------------------------------------------
     def add_sata(self, name="sata", phy=None, mode="read+write"):
@@ -1494,7 +1574,7 @@ class LiteXSoC(SoC):
             self.sata_phy.crg.cd_sata_rx.clk)
 
     # Add PCIe -------------------------------------------------------------------------------------
-    def add_pcie(self, name="pcie", phy=None, ndmas=0):
+    def add_pcie(self, name="pcie", phy=None, ndmas=0, max_pending_requests=8):
         assert self.csr.data_width == 32
         assert not hasattr(self, f"{name}_endpoint")
 
@@ -1504,7 +1584,7 @@ class LiteXSoC(SoC):
         from litepcie.frontend.wishbone import LitePCIeWishboneMaster
 
         # Endpoint
-        endpoint = LitePCIeEndpoint(phy, max_pending_requests=8)
+        endpoint = LitePCIeEndpoint(phy, max_pending_requests=max_pending_requests)
         setattr(self.submodules, f"{name}_endpoint", endpoint)
 
         # MMAP

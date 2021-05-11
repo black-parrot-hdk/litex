@@ -26,7 +26,6 @@
 #include "jsmn.h"
 
 #include <progress.h>
-#include <spiflash.h>
 
 #include <libliteeth/udp.h>
 #include <libliteeth/tftp.h>
@@ -51,7 +50,7 @@ extern void boot_helper(unsigned long r1, unsigned long r2, unsigned long r3, un
 
 static void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr)
 {
-	printf("Executing booted program at 0x%08x\n\n", addr);
+	printf("Executing booted program at 0x%08lx\n\n", addr);
 	printf("--============= \e[1mLiftoff!\e[0m ===============--\n");
 	uart_sync();
 #ifdef CONFIG_CPU_HAS_INTERRUPT
@@ -60,9 +59,7 @@ static void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, u
 #endif
 	flush_cpu_icache();
 	flush_cpu_dcache();
-#ifdef CONFIG_L2_SIZE
 	flush_l2_cache();
-#endif
 
 #if defined(CONFIG_CPU_TYPE_MOR1KX) && defined(CONFIG_CPU_VARIANT_LINUX)
 	/* Mainline Linux expects to have exception vector base address set to the
@@ -102,6 +99,8 @@ void romboot(void)
 /* Serial Boot                                                           */
 /*-----------------------------------------------------------------------*/
 
+#ifdef CSR_UART_BASE
+
 static int check_ack(void)
 {
 	int recognized;
@@ -109,7 +108,11 @@ static int check_ack(void)
 
 	timer0_en_write(0);
 	timer0_reload_write(0);
+#ifndef CONFIG_DISABLE_DELAYS
 	timer0_load_write(CONFIG_CLOCK_FREQUENCY/4);
+#else
+	timer0_load_write(0);
+#endif
 	timer0_en_write(1);
 	timer0_update_value_write(1);
 	recognized = 0;
@@ -189,20 +192,18 @@ int serialboot(void)
 			frame.payload[i] = uart_read();
 
 		/* Check Frame CRC (if CMD has a CRC) */
-		if (frame.cmd != SFL_CMD_LOAD_NO_CRC) {
-			actualcrc = ((int)frame.crc[0] << 8)|(int)frame.crc[1];
-			goodcrc = crc16(&frame.cmd, frame.payload_length+1);
-			if(actualcrc != goodcrc) {
-				/* Clear out the RX buffer */
-				while (uart_read_nonblock()) uart_read();
-				failed++;
-				if(failed == MAX_FAILED) {
-					printf("Too many consecutive errors, aborting");
-					return 1;
-				}
-				uart_write(SFL_ACK_CRCERROR);
-				continue;
+		actualcrc = ((int)frame.crc[0] << 8)|(int)frame.crc[1];
+		goodcrc = crc16(&frame.cmd, frame.payload_length+1);
+		if(actualcrc != goodcrc) {
+			/* Clear out the RX buffer */
+			while (uart_read_nonblock()) uart_read();
+			failed++;
+			if(failed == MAX_FAILED) {
+				printf("Too many consecutive errors, aborting");
+				return 1;
 			}
+			uart_write(SFL_ACK_CRCERROR);
+			continue;
 		}
 
 		/* Execute Frame CMD */
@@ -211,12 +212,11 @@ int serialboot(void)
 				failed = 0;
 				uart_write(SFL_ACK_SUCCESS);
 				return 1;
-			case SFL_CMD_LOAD:
-			case SFL_CMD_LOAD_NO_CRC: {
+			case SFL_CMD_LOAD: {
 				char *writepointer;
 
 				failed = 0;
-				writepointer = (char *) get_uint32(&frame.payload[0]);
+				writepointer = (char *)(uintptr_t) get_uint32(&frame.payload[0]);
 				for(i=4;i<frame.payload_length;i++)
 					*(writepointer++) = frame.payload[i];
 				if (frame.cmd == SFL_CMD_LOAD)
@@ -232,31 +232,6 @@ int serialboot(void)
 				boot(0, 0, 0, addr);
 				break;
 			}
-			case SFL_CMD_FLASH: {
-#if (defined CSR_SPIFLASH_BASE && defined SPIFLASH_PAGE_SIZE)
-				uint32_t addr;
-
-				failed = 0;
-				addr = get_uint32(&frame.payload[0]);
-
-				for (i = 4; i < frame.payload_length; i++) {
-					/* Erase page at sector boundaries before writing */
-					if ((addr & (SPIFLASH_SECTOR_SIZE - 1)) == 0) {
-						erase_flash_sector(addr);
-					}
-					write_to_flash(addr, &frame.payload[i], 1);
-					addr++;
-				}
-				uart_write(SFL_ACK_SUCCESS);
-#endif
-				break;
-			}
-			case SFL_CMD_REBOOT:
-#ifdef CSR_CTRL_RESET_ADDR
-				uart_write(SFL_ACK_SUCCESS);
-				ctrl_reset_write(1);
-#endif
-				break;
 			default:
 				failed++;
 				if(failed == MAX_FAILED) {
@@ -269,6 +244,8 @@ int serialboot(void)
 	}
 	return 1;
 }
+
+#endif
 
 /*-----------------------------------------------------------------------*/
 /* Ethernet Boot                                                         */
@@ -300,7 +277,7 @@ static int copy_file_from_tftp_to_ram(unsigned int ip, unsigned short server_por
 const char *filename, char *buffer)
 {
 	int size;
-	printf("Copying %s to 0x%08x... ", filename, buffer);
+	printf("Copying %s to %p... ", filename, buffer);
 	size = tftp_get(ip, server_port, filename, buffer);
 	if(size > 0)
 		printf("(%d bytes)", size);
@@ -455,7 +432,7 @@ static int copy_image_from_flash_to_ram(unsigned int flash_address, unsigned lon
 
 	length = check_image_in_flash(flash_address);
 	if(length > 0) {
-		printf("Copying 0x%08x to 0x%08x (%d bytes)...\n", flash_address, ram_address, length);
+		printf("Copying 0x%08x to 0x%08lx (%d bytes)...\n", flash_address, ram_address, length);
 		offset = 0;
 		init_progression_bar(length);
 		while (length > 0) {
@@ -527,7 +504,7 @@ static int copy_file_from_sdcard_to_ram(const char * filename, unsigned long ram
 	}
 
 	length = f_size(&file);
-	printf("Copying %s to 0x%08x (%d bytes)...\n", filename, ram_address, length);
+	printf("Copying %s to 0x%08lx (%d bytes)...\n", filename, ram_address, length);
 	init_progression_bar(length);
 	offset = 0;
 	for (;;) {
@@ -702,7 +679,7 @@ static int copy_file_from_sata_to_ram(const char * filename, unsigned long ram_a
 	}
 
 	length = f_size(&file);
-	printf("Copying %s to 0x%08x (%d bytes)...\n", filename, ram_address, length);
+	printf("Copying %s to 0x%08lx (%d bytes)...\n", filename, ram_address, length);
 	init_progression_bar(length);
 	offset = 0;
 	for (;;) {

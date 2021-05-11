@@ -79,6 +79,38 @@ def _connect_axi(master, slave, keep=None, omit=None):
         r.extend(m.connect(s, keep=keep, omit=omit))
     return r
 
+def connect_to_pads(bus, pads, mode="master", axi_full=False):
+    assert mode in ["slave", "master"]
+    r = []
+    def swap_mode(mode): return "master" if mode == "slave" else "slave"
+    channel_modes = {
+        "aw": mode,
+        "w" : mode,
+        "b" : swap_mode(mode),
+        "ar": mode,
+        "r" : swap_mode(mode),
+    }
+    for channel, mode in channel_modes.items():
+        ch = getattr(bus, channel)
+        for name, width in (
+            [("valid", 1)] +
+            [("last",  1)] if (ch in ["w", "r"] and axi_full) else [] +
+            ch.description.payload_layout):
+            sig  = getattr(ch, name)
+            pad  = getattr(pads, channel + name)
+            if mode == "master":
+                r.append(pad.eq(sig))
+            else:
+                r.append(sig.eq(pad))
+        for name, width in [("ready", 1)]:
+            sig  = getattr(ch, name)
+            pad  = getattr(pads, channel + name)
+            if mode == "master":
+                r.append(sig.eq(pad))
+            else:
+                r.append(pad.eq(sig))
+    return r
+
 def _axi_layout_flat(axi):
     # yields tuples (channel, name, direction)
     def get_dir(channel, direction):
@@ -109,6 +141,19 @@ class AXIInterface:
         self.b  = stream.Endpoint(b_description(id_width))
         self.ar = stream.Endpoint(ax_description(address_width, id_width))
         self.r  = stream.Endpoint(r_description(data_width, id_width))
+
+    def connect_to_pads(self, pads, mode="master"):
+        return connect_to_pads(self, pads, mode, axi_full=True)
+
+    def get_ios(self, bus_name="wb"):
+        subsignals = []
+        for channel in ["aw", "w", "b", "ar", "r"]:
+            for name in ["valid", "ready"] + (["last"] if channel in ["w", "r"] else []):
+                subsignals.append(Subsignal(channel + name, Pins(1)))
+            for name, width in getattr(self, channel).description.payload_layout:
+                subsignals.append(Subsignal(channel + name, Pins(width)))
+        ios = [(bus_name , 0) + tuple(subsignals)]
+        return ios
 
     def connect(self, slave, **kwargs):
         return _connect_axi(self, slave, **kwargs)
@@ -159,32 +204,7 @@ class AXILiteInterface:
         return ios
 
     def connect_to_pads(self, pads, mode="master"):
-        assert mode in ["slave", "master"]
-        r = []
-        def swap_mode(mode): return "master" if mode == "slave" else "slave"
-        channel_modes = {
-            "aw": mode,
-            "w" : mode,
-            "b" : swap_mode(mode),
-            "ar": mode,
-            "r" : swap_mode(mode),
-        }
-        for channel, mode in channel_modes.items():
-            for name, width in [("valid", 1)] + getattr(self, channel).description.payload_layout:
-                sig  = getattr(getattr(self, channel), name)
-                pad  = getattr(pads, channel + name)
-                if mode == "master":
-                    r.append(pad.eq(sig))
-                else:
-                    r.append(sig.eq(pad))
-            for name, width in [("ready", 1)]:
-                sig  = getattr(getattr(self, channel), name)
-                pad  = getattr(pads, channel + name)
-                if mode == "master":
-                    r.append(sig.eq(pad))
-                else:
-                    r.append(pad.eq(sig))
-        return r
+        return connect_to_pads(self, pads, mode)
 
     def connect(self, slave, **kwargs):
         return _connect_axi(self, slave, **kwargs)
@@ -238,10 +258,13 @@ class AXILiteInterface:
 # AXI Stream Definition ----------------------------------------------------------------------------
 
 class AXIStreamInterface(stream.Endpoint):
-    def __init__(self, data_width=32, user_width=0):
+    def __init__(self, data_width=32, keep_width=0, user_width=0):
         self.data_width = data_width
+        self.keep_width = keep_width
         self.user_width = user_width
         payload_layout = [("data", data_width)]
+        if self.keep_width:
+            payload_layout += [("keep", keep_width)]
         param_layout   = []
         if self.user_width:
             param_layout += [("user", user_width)]
@@ -254,6 +277,8 @@ class AXIStreamInterface(stream.Endpoint):
             Subsignal("tready", Pins(1)),
             Subsignal("tdata",  Pins(self.data_width)),
         ]
+        if self.keep_width:
+            subsignals += [Subsignal("tkeep", Pins(self.keep_width))]
         if self.user_width:
             subsignals += [Subsignal("tuser", Pins(self.user_width))]
         ios = [(bus_name , 0) + tuple(subsignals)]
@@ -267,6 +292,8 @@ class AXIStreamInterface(stream.Endpoint):
             r.append(self.ready.eq(pads.tready))
             r.append(pads.tlast.eq(self.last))
             r.append(pads.tdata.eq(self.data))
+            if self.keep_width:
+                r.append(pads.tkeep.eq(self.keep))
             if self.user_width:
                 r.append(pads.tuser.eq(self.user))
         if mode == "slave":
@@ -274,6 +301,8 @@ class AXIStreamInterface(stream.Endpoint):
             r.append(pads.tready.eq(self.ready))
             r.append(self.last.eq(pads.tlast))
             r.append(self.data.eq(pads.tdata))
+            if self.keep_width:
+                r.append(self.keep.eq(pads.tkeep))
             if self.user_width:
                 r.append(self.user.eq(pads.tuser))
         return r

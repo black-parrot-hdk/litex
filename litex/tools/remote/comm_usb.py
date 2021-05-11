@@ -7,6 +7,8 @@
 import usb.core
 import time
 
+from litex.tools.remote.csr_builder import CSRBuilder
+
 # Wishbone USB Protocol Bridge
 # ============================
 #
@@ -57,13 +59,16 @@ import time
 # we only support 32-bit reads and writes, this is always 4.  On big endian
 # USB, this has the value {04, 00}.
 
-class CommUSB:
-    def __init__(self, vid=None, pid=None, max_retries=10, debug=False):
-        self.vid = vid
-        self.pid = pid
-        self.debug = debug
+# CommUSB ------------------------------------------------------------------------------------------
+
+class CommUSB(CSRBuilder):
+    def __init__(self, vid=None, pid=None, max_retries=10, csr_csv=None, debug=False):
+        CSRBuilder.__init__(self, comm=self, csr_csv=csr_csv)
+        self.vid         = vid
+        self.pid         = pid
+        self.debug       = debug
         self.max_retries = max_retries
-        self.MAX_RECURSION_COUNT = 5
+        self.max_recursion_count = 5
 
     def open(self):
         if hasattr(self, "dev"):
@@ -102,7 +107,7 @@ class CommUSB:
             if value is None:
                 value = 0xffffffff
             if self.debug:
-                print("read {:08x} @ {:08x}".format(value, addr))
+                print("read 0x{:08x} @ 0x{:08x}".format(value, addr))
             if length is None:
                 return value
             data.append(value)
@@ -123,12 +128,12 @@ class CommUSB:
                 print("Access Denied. Maybe try using sudo?")
             self.close()
             self.open()
-            if depth < self.MAX_RECURSION_COUNT:
+            if depth < self.max_recursion_count:
                 return self.usb_read(addr, depth+1)
         except TypeError:
             self.close()
             self.open()
-            if depth < self.MAX_RECURSION_COUNT:
+            if depth < self.max_recursion_count:
                 return self.usb_read(addr, depth+1)
 
     def write(self, addr, data):
@@ -137,7 +142,7 @@ class CommUSB:
         for i, value in enumerate(data):
             self.usb_write(addr, value)
             if self.debug:
-                print("write {:08x} @ {:08x}".format(value, addr + 4*i))
+                print("write 0x{:08x} @ 0x{:08x}".format(value, addr + 4*i))
 
     def usb_write(self, addr, value, depth=0):
         try:
@@ -154,5 +159,5 @@ class CommUSB:
                 print("Access Denied. Maybe try using sudo?")
             self.close()
             self.open()
-            if depth < self.MAX_RECURSION_COUNT:
+            if depth < self.max_recursion_count:
                 return self.usb_write(addr, value, depth+1)

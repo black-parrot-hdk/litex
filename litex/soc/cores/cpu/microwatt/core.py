@@ -16,7 +16,6 @@ from litex.soc.interconnect.csr import *
 from litex.gen.common import reverse_bytes
 from litex.soc.cores.cpu import CPU
 
-
 CPU_VARIANTS = ["standard", "standard+ghdl", "standard+irq", "standard+ghdl+irq"]
 
 class Microwatt(CPU):
@@ -32,7 +31,11 @@ class Microwatt(CPU):
 
     @property
     def mem_map(self):
-        return {"csr": 0xc0000000}
+        return {
+            "csr":      0xc0000000,
+            "xicsicp":  0xc3ff0000,
+            "xicsics":  0xc3ff1000
+        }
 
     @property
     def gcc_flags(self):
@@ -108,16 +111,12 @@ class Microwatt(CPU):
         # add vhdl sources
         self.add_sources(platform, use_ghdl_yosys_plugin="ghdl" in self.variant)
 
-        # add XICS controller
-        if "irq" in variant:
-            self.add_xics()
-
     def set_reset_address(self, reset_address):
         assert not hasattr(self, "reset_address")
         self.reset_address = reset_address
         assert reset_address == 0x00000000
 
-    def add_xics(self):
+    def add_soc_components(self, soc, soc_region_cls):
         self.submodules.xics = XICSSlave(
             platform     = self.platform,
             variant      = self.variant,
@@ -125,6 +124,10 @@ class Microwatt(CPU):
             int_level_in = self.interrupt,
             endianness   = self.endianness
         )
+        xicsicp_region = soc_region_cls(origin=soc.mem_map.get("xicsicp"), size=4096, cached=False)
+        xicsics_region = soc_region_cls(origin=soc.mem_map.get("xicsics"), size=4096, cached=False)
+        soc.bus.add_slave(name="xicsicp", slave=self.xics.icp_bus, region=xicsicp_region)
+        soc.bus.add_slave(name="xicsics", slave=self.xics.ics_bus, region=xicsics_region)
 
     @staticmethod
     def add_sources(platform, use_ghdl_yosys_plugin=False):
@@ -138,7 +141,6 @@ class Microwatt(CPU):
 
             # Fetch
             "fetch1.vhdl",
-            "fetch2.vhdl",
 
             # Instruction/Data Cache
             "cache_ram.vhdl",

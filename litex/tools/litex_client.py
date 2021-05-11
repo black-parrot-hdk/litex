@@ -48,25 +48,25 @@ class RemoteClient(EtherboneIPC, CSRBuilder):
 
     def read(self, addr, length=None, burst="incr"):
         length_int = 1 if length is None else length
-        # prepare packet
+        # Prepare packet
         record = EtherboneRecord()
         incr = (burst == "incr")
-        record.reads = EtherboneReads(addrs=[self.base_address + addr + 4*incr*j for j in range(length_int)])
+        record.reads  = EtherboneReads(addrs=[self.base_address + addr + 4*incr*j for j in range(length_int)])
         record.rcount = len(record.reads)
 
-        # send packet
+        # Send packet
         packet = EtherbonePacket()
         packet.records = [record]
         packet.encode()
-        self.send_packet(self.socket, packet[:])
+        self.send_packet(self.socket, packet)
 
-        # receive response
+        # Receive response
         packet = EtherbonePacket(self.receive_packet(self.socket))
         packet.decode()
         datas = packet.records.pop().writes.get_datas()
         if self.debug:
             for i, data in enumerate(datas):
-                print("read {:08x} @ {:08x}".format(data, self.base_address + addr + 4*i))
+                print("read 0x{:08x} @ 0x{:08x}".format(data, self.base_address + addr + 4*i))
         return datas[0] if length is None else datas
 
     def write(self, addr, datas):
@@ -82,7 +82,7 @@ class RemoteClient(EtherboneIPC, CSRBuilder):
 
         if self.debug:
             for i, data in enumerate(datas):
-                print("write {:08x} @ {:08x}".format(data, self.base_address + addr + 4*i))
+                print("write 0x{:08x} @ 0x{:08x}".format(data, self.base_address + addr + 4*i))
 
 # Utils --------------------------------------------------------------------------------------------
 
@@ -111,13 +111,31 @@ def dump_registers(port):
 
     wb.close()
 
+def read_memory(port, addr):
+    wb = RemoteClient(port=port)
+    wb.open()
+
+    print("0x{:08x}".format(wb.read(addr)))
+
+    wb.close()
+
+def write_memory(port, addr, data):
+    wb = RemoteClient(port=port)
+    wb.open()
+
+    wb.write(addr, data)
+
+    wb.close()
+
 # Run ----------------------------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX Client utility")
-    parser.add_argument("--port",  default="1234",      help="Host bind port")
-    parser.add_argument("--ident", action="store_true", help="Dump FPGA identifier")
-    parser.add_argument("--regs",  action="store_true", help="Dump FPGA registers")
+    parser.add_argument("--port",  default="1234",        help="Host bind port")
+    parser.add_argument("--ident", action="store_true",   help="Dump SoC identifier")
+    parser.add_argument("--regs",  action="store_true",   help="Dump SoC registers")
+    parser.add_argument("--read",  default=None,          help="Do a MMAP Read to SoC bus (--read addr)")
+    parser.add_argument("--write", default=None, nargs=2, help="Do a MMAP Write to SoC bus (--write addr data)")
     args = parser.parse_args()
 
     port = int(args.port, 0)
@@ -127,6 +145,12 @@ def main():
 
     if args.regs:
         dump_registers(port=port)
+
+    if args.read:
+        read_memory(port=port, addr=int(args.read, 0))
+
+    if args.write:
+        write_memory(port=port, addr=int(args.write[0], 0), data=int(args.write[1], 0))
 
 if __name__ == "__main__":
     main()

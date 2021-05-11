@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#include <generated/csr.h>
+
 FILE *stdin, *stdout, *stderr;
 
 static console_write_hook write_hook;
@@ -20,6 +22,7 @@ void console_set_read_hook(console_read_hook r, console_read_nonblock_hook rn)
 	read_nonblock_hook = rn;
 }
 
+#ifdef CSR_UART_BASE
 int putchar(int c)
 {
 	uart_write(c);
@@ -46,12 +49,33 @@ int readchar_nonblock(void)
 		|| ((read_nonblock_hook != NULL) && read_nonblock_hook()));
 }
 
+#else
+
+int putchar(int c)
+{
+	if(write_hook != NULL)
+		write_hook(c);
+	return c;
+}
+
+char readchar(void)
+{
+	while(1) {
+		if((read_nonblock_hook != NULL) && read_nonblock_hook())
+			return read_hook();
+	}
+}
+
+int readchar_nonblock(void)
+{
+	return ((read_nonblock_hook != NULL) && read_nonblock_hook());
+}
+
+#endif
+
 int puts(const char *s)
 {
-	while(*s) {
-		putchar(*s);
-		s++;
-	}
+	putsnonl(s);
 	putchar('\n');
 	return 1;
 }

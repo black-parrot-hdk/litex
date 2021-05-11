@@ -8,6 +8,7 @@
 
 import sys
 import os
+import re
 
 from migen.fhdl.structure import Signal, Cat
 from migen.genlib.record import Record

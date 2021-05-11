@@ -14,24 +14,50 @@ import os
 import time
 import serial
 import threading
+import multiprocessing
 import argparse
 import json
+import socket
 
 # Console ------------------------------------------------------------------------------------------
 
 if sys.platform == "win32":
+    import ctypes
     import msvcrt
     class Console:
         def configure(self):
-            pass
+            # https://stackoverflow.com/a/36760881
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
 
         def unconfigure(self):
             pass
 
         def getkey(self):
             return msvcrt.getch()
+
+        # getch doesn't return Virtual Keycodes, but rather
+        # PS/2 Scan Codes. Keycodes starting with 0xE0 are
+        # worth handling.
+        def escape_char(self, b):
+            return b == b"\xe0"
+
+        def handle_escape(self, b):
+            return {
+                b"H" : b"\x1b[A",  # Up
+                b"P" : b"\x1b[B",  # Down
+                b"K" : b"\x1b[D",  # Left
+                b"M" : b"\x1b[C",  # Right
+                b"G" : b"\x1b[H",  # Home
+                b"O" : b"\x1b[F",  # End
+                b"R" : b"\x1b[2~", # Insert
+                b"S" : b"\x1b[3~", # Delete
+            }.get(b, None) # TODO: Handle ESC? Others?
+
 else:
     import termios
+    import pty
     class Console:
         def __init__(self):
             self.fd = sys.stdin.fileno()
@@ -50,6 +76,118 @@ else:
         def getkey(self):
             return os.read(self.fd, 1)
 
+        def escape_char(self, b):
+            return False
+
+        def handle_escape(self, b):
+            return None
+
+# Crossover UART  ----------------------------------------------------------------------------------
+
+from litex import RemoteClient
+
+class CrossoverUART:
+    def __init__(self, host="localhost", base_address=0): # FIXME: add command line arguments
+        self.bus = RemoteClient(host=host, base_address=base_address)
+
+    def open(self):
+        self.bus.open()
+        self.file, self.name = pty.openpty()
+        self.pty2crossover_thread = multiprocessing.Process(target=self.pty2crossover)
+        self.crossover2pty_thread = multiprocessing.Process(target=self.crossover2pty)
+        self.pty2crossover_thread.start()
+        self.crossover2pty_thread.start()
+
+    def close(self):
+        self.bus.close()
+        self.pty2crossover_thread.terminate()
+        self.crossover2pty_thread.terminate()
+
+    def pty2crossover(self):
+        while True:
+            r = os.read(self.file, 1)
+            self.bus.regs.uart_xover_rxtx.write(ord(r))
+
+    def crossover2pty(self):
+        while True:
+            if self.bus.regs.uart_txfull.read():
+                length = 16
+            elif not self.bus.regs.uart_xover_rxempty.read():
+                length = 1
+            else:
+                length = 0
+            if length:
+                r = self.bus.read(self.bus.regs.uart_xover_rxtx.addr, length=length, burst="fixed")
+                for v in r:
+                    os.write(self.file, bytes(chr(v).encode("utf-8")))
+
+# JTAG UART ----------------------------------------------------------------------------------------
+
+from litex.build.openocd import OpenOCD
+
+class JTAGUART:
+    def __init__(self, config="openocd_xc7_ft2232.cfg", port=20000):
+        self.config = config
+        self.port   = port
+
+    def open(self):
+        self.file, self.name = pty.openpty()
+        self.jtag2tcp_thread = multiprocessing.Process(target=self.jtag2tcp)
+        self.jtag2tcp_thread.start()
+        time.sleep(0.5)
+        self.pty2tcp_thread  = multiprocessing.Process(target=self.pty2tcp)
+        self.tcp2pty_thread  = multiprocessing.Process(target=self.tcp2pty)
+        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp.connect(("localhost", self.port))
+        self.pty2tcp_thread.start()
+        self.tcp2pty_thread.start()
+
+    def close(self):
+        self.jtag2tcp_thread.terminate()
+        self.pty2tcp_thread.terminate()
+        self.tcp2pty_thread.terminate()
+
+    def jtag2tcp(self):
+        prog = OpenOCD(self.config)
+        prog.stream(self.port)
+
+    def pty2tcp(self):
+        while True:
+            r = os.read(self.file, 1)
+            self.tcp.send(r)
+
+    def tcp2pty(self):
+        while True:
+            r = self.tcp.recv(1)
+            os.write(self.file, bytes(r))
+
+# Intel/Altera JTAG UART via nios2-terminal
+class Nios2Terminal():
+    def __init__(self):
+        from subprocess import Popen, PIPE
+        p = Popen("nios2-terminal", stdin=PIPE, stdout=PIPE)
+        self.p = p
+
+    def read(self):
+        return self.p.stdout.read(1)
+
+    def in_waiting(self):
+        # unfortunately p.stdout does not provide
+        # information about awaiting input
+        return False
+
+    def write(self, data):
+        if data is not None:
+            self.p.stdin.write(data)
+            try:
+                self.p.stdin.flush()
+            except BrokenPipeError:
+                print("nios2-terminal has terminated, exiting...\n")
+                sys.exit(1)
+
+    def close(self):
+        self.p.terminate()
+
 # SFL ----------------------------------------------------------------------------------------------
 
 sfl_prompt_req = b"F7:    boot from serial\n"
@@ -58,15 +196,13 @@ sfl_prompt_ack = b"\x06"
 sfl_magic_req = b"sL5DdSMmkekro\n"
 sfl_magic_ack = b"z6IHG7cYDID6o\n"
 
-sfl_payload_length = 64
+sfl_payload_length = 255
+sfl_outstanding    = 128
 
 # General commands
 sfl_cmd_abort       = b"\x00"
 sfl_cmd_load        = b"\x01"
-sfl_cmd_load_no_crc = b"\x03"
 sfl_cmd_jump        = b"\x02"
-sfl_cmd_flash       = b"\x04"
-sfl_cmd_reboot      = b"\x05"
 
 # Replies
 sfl_ack_success  = b"K"
@@ -137,7 +273,7 @@ def crc16(l):
 # LiteXTerm ----------------------------------------------------------------------------------------
 
 class LiteXTerm:
-    def __init__(self, serial_boot, kernel_image, kernel_address, json_images, no_crc, flash):
+    def __init__(self, serial_boot, kernel_image, kernel_address, json_images):
         self.serial_boot = serial_boot
         assert not (kernel_image is not None and json_images is not None)
         self.mem_regions = {}
@@ -146,11 +282,11 @@ class LiteXTerm:
             self.boot_address = kernel_address
         if json_images is not None:
             f = open(json_images, "r")
-            self.mem_regions.update(json.load(f))
+            json_dir = os.path.dirname(json_images)
+            for k, v in json.load(f).items():
+                self.mem_regions[os.path.join(json_dir, k)] = v
             self.boot_address = self.mem_regions[list(self.mem_regions.keys())[-1]]
             f.close()
-        self.no_crc = no_crc
-        self.flash = flash
 
         self.reader_alive = False
         self.writer_alive = False
@@ -166,6 +302,13 @@ class LiteXTerm:
     def open(self, port, baudrate):
         if hasattr(self, "port"):
             return
+        # FIXME: https://github.com/enjoy-digital/litex/issues/720
+        if "ttyACM" in port:
+            self.payload_length = sfl_payload_length
+            self.delay          = 1e-4
+        else:
+            self.payload_length = 64
+            self.delay          = 1e-5
         self.port = serial.serial_for_url(port, baudrate)
 
     def close(self):
@@ -175,7 +318,8 @@ class LiteXTerm:
         del self.port
 
     def sigint(self, sig, frame):
-        self.port.write(b"\x03")
+        if hasattr(self, "port"):
+            self.port.write(b"\x03")
         sigint_time_current = time.time()
         # Exit term if 2 CTRL-C pressed in less than 0.5s.
         if (sigint_time_current - self.sigint_time_last < 0.5):
@@ -189,54 +333,86 @@ class LiteXTerm:
         retry = 1
         while retry:
             self.port.write(frame.encode())
-            if not self.no_crc:
-                # Get the reply from the device
-                reply = self.port.read()
-                if reply == sfl_ack_success:
-                    retry = 0
-                elif reply == sfl_ack_crcerror:
-                    retry = 1
-                else:
-                    print("[LXTERM] Got unknown reply '{}' from the device, aborting.".format(reply))
-                    return 0
-            else:
+            # Get the reply from the device
+            reply = self.port.read()
+            if reply == sfl_ack_success:
                 retry = 0
+            elif reply == sfl_ack_crcerror:
+                retry = 1
+            else:
+                print("[LXTERM] Got unknown reply '{}' from the device, aborting.".format(reply))
+                return 0
         return 1
+
+    def receive_upload_response(self):
+        reply = self.port.read()
+        if reply == sfl_ack_success:
+            return True
+        elif reply == sfl_ack_crcerror:
+            print("[LXTERM] Upload to device failed due to data corruption (CRC error)")
+        else:
+            print(f"[LXTERM] Got unexpected response from device '{reply}'")
+        sys.exit(1)
 
     def upload(self, filename, address):
         f = open(filename, "rb")
         f.seek(0, 2)
         length = f.tell()
         f.seek(0, 0)
-        print("[LXTERM] {} {} to 0x{:08x} ({} bytes)...".format(
-            "Flashing" if self.flash else "Uploading", filename, address, length))
+
+        print(f"[LXTERM] Uploading {filename} to 0x{address:08x} ({length} bytes)...")
+
+        # Prepare parameters
         current_address = address
-        position = 0
-        start = time.time()
-        remaining = length
+        position        = 0
+        start           = time.time()
+        remaining       = length
+        outstanding     = 0
         while remaining:
-            sys.stdout.write("|{}>{}| {}%\r".format('=' * (20*position//length),
-                                                    ' ' * (20-20*position//length),
-                                                    100*position//length))
+            # Show progress
+            sys.stdout.write("|{}>{}| {}%\r".format(
+                "=" * (20*position//length),
+                " " * (20-20*position//length),
+                100*position//length))
             sys.stdout.flush()
-            frame = SFLFrame()
-            frame_data = f.read(min(remaining, sfl_payload_length-4))
-            if self.flash:
-                frame.cmd = sfl_cmd_flash
-            else:
-                frame.cmd = sfl_cmd_load if not self.no_crc else sfl_cmd_load_no_crc
-            frame.payload = current_address.to_bytes(4, "big")
-            frame.payload += frame_data
-            if self.send_frame(frame) == 0:
-                return
-            current_address += len(frame_data)
-            position += len(frame_data)
-            remaining -= len(frame_data)
-            time.sleep(1e-5) # Inter-frame delay for fast UARTs (ex: FT245).
-        end = time.time()
+
+            # Send frame if max outstanding not reached.
+            if outstanding <= sfl_outstanding:
+                # Prepare frame.
+                frame      = SFLFrame()
+                frame.cmd  = sfl_cmd_load
+                frame_data = f.read(min(remaining, self.payload_length-4))
+                frame.payload = current_address.to_bytes(4, "big")
+                frame.payload += frame_data
+
+                # Encode frame and send it.
+                self.port.write(frame.encode())
+
+                # Update parameters
+                current_address += len(frame_data)
+                position        += len(frame_data)
+                remaining       -= len(frame_data)
+                outstanding     += 1
+
+                # Inter-frame delay.
+                time.sleep(self.delay)
+
+            # Read response if available.
+            while self.port.in_waiting:
+                ack = self.receive_upload_response()
+                if ack:
+                    outstanding -= 1
+                    break
+
+        # Get remaining responses.
+        for _ in range(outstanding):
+            self.receive_upload_response()
+
+        # Compute speed.
+        end     = time.time()
         elapsed = end - start
-        f.close()
         print("[LXTERM] Upload complete ({0:.1f}KB/s).".format(length/(elapsed*1024)))
+        f.close()
         return length
 
     def boot(self):
@@ -244,12 +420,6 @@ class LiteXTerm:
         frame = SFLFrame()
         frame.cmd = sfl_cmd_jump
         frame.payload = int(self.boot_address, 16).to_bytes(4, "big")
-        self.send_frame(frame)
-
-    def reboot(self):
-        print("[LXTERM] Rebooting the device.")
-        frame = SFLFrame()
-        frame.cmd = sfl_cmd_reboot
         self.send_frame(frame)
 
     def detect_prompt(self, data):
@@ -276,12 +446,8 @@ class LiteXTerm:
             self.port.write(sfl_magic_ack)
         for filename, base in self.mem_regions.items():
             self.upload(filename, int(base, 16))
-        if self.flash:
-            # clear mem_regions to avoid re-flashing on next reboot(s)
-            self.mem_regions = {}
-        else:
-            self.boot()
-        print("[LXTERM] Done.");
+        self.boot()
+        print("[LXTERM] Done.")
 
     def reader(self):
         try:
@@ -318,6 +484,10 @@ class LiteXTerm:
                     self.stop()
                 elif b == b"\n":
                     self.port.write(b"\x0a")
+                elif self.console.escape_char(b):
+                    b = self.console.getkey()
+                    ansi_seq = self.console.handle_escape(b)
+                    self.port.write(ansi_seq)
                 else:
                     self.port.write(b)
         except:
@@ -336,7 +506,6 @@ class LiteXTerm:
         self.writer_thread.join()
 
     def start(self):
-        print("[LXTERM] Starting....")
         self.start_reader()
         self.start_writer()
 
@@ -353,20 +522,36 @@ class LiteXTerm:
 
 def _get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("port",                                              help="Serial port")
-    parser.add_argument("--speed",       default=115200,                     help="Aerial baudrate")
+    parser.add_argument("port",                                              help="Serial port (eg /dev/tty*, crossover, jtag_uart, jtag_atlantic)")
+    parser.add_argument("--speed",       default=115200,                     help="Serial baudrate")
     parser.add_argument("--serial-boot", default=False, action='store_true', help="Automatically initiate serial boot")
     parser.add_argument("--kernel",      default=None,                       help="Kernel image")
-    parser.add_argument("--kernel-adr",  default="0x40000000",               help="Kernel address (or flash offset with --flash)")
+    parser.add_argument("--kernel-adr",  default="0x40000000",               help="Kernel address")
     parser.add_argument("--images",      default=None,                       help="JSON description of the images to load to memory")
-    parser.add_argument("--no-crc",      default=False, action='store_true', help="Disable CRC check (speedup serialboot)")
-    parser.add_argument("--flash",       default=False, action='store_true', help="Flash data with serialboot command")
+    parser.add_argument("--jtag-config", default="openocd_xc7_ft2232.cfg",   help="OpenOCD JTAG configuration file with jtag_uart")
     return parser.parse_args()
 
 def main():
     args = _get_args()
-    term = LiteXTerm(args.serial_boot, args.kernel, args.kernel_adr, args.images, args.no_crc, args.flash)
-    term.open(args.port, int(float(args.speed)))
+    term = LiteXTerm(args.serial_boot, args.kernel, args.kernel_adr, args.images)
+
+    if sys.platform == "win32":
+        if args.port in ["crossover", "jtag_uart"]:
+            raise NotImplementedError
+    bridge_cls    = {"crossover": CrossoverUART, "jtag_uart": JTAGUART}.get(args.port, None)
+    bridge_kwargs = {"jtag_uart": {"config": args.jtag_config}}.get(args.port, {})
+    if args.port == "jtag_atlantic":
+        term.port = Nios2Terminal()
+        port = args.port
+        term.payload_length = 128
+        term.delay          = 1e-6
+    elif bridge_cls is not None:
+        bridge = bridge_cls(**bridge_kwargs)
+        bridge.open()
+        port = os.ttyname(bridge.name)
+    else:
+        port = args.port
+    term.open(port, int(float(args.speed)))
     term.console.configure()
     term.start()
     term.join(True)

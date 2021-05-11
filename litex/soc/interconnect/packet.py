@@ -5,6 +5,8 @@
 # Copyright (c) 2019 Vamsi K Vytla <vkvytla@lbl.gov>
 # SPDX-License-Identifier: BSD-2-Clause
 
+from math import log2
+
 from migen import *
 from migen.genlib.roundrobin import *
 from migen.genlib.record import *
@@ -184,6 +186,15 @@ class Packetizer(Module):
         if header_words != 1:
             self.sync += If(sr_shift, sr.eq(sr[data_width:]))
 
+        # Last BE ----------------------------------------------------------------------------------
+        last_be   = Signal(data_width//8)
+        last_be_d = Signal(data_width//8)
+        if hasattr(sink, "last_be") and hasattr(source, "last_be"):
+            rotate_by = header.length%bytes_per_clk
+            x = [sink.last_be[(i + rotate_by)%bytes_per_clk] for i in range(bytes_per_clk)]
+            self.comb += last_be.eq(Cat(*x))
+            self.sync += last_be_d.eq(last_be)
+
         # FSM --------------------------------------------------------------------------------------
         self.submodules.fsm = fsm = FSM(reset_state="IDLE")
         fsm_from_idle = Signal()
@@ -229,9 +240,11 @@ class Packetizer(Module):
                )
             )
         )
+        source_last_be = getattr(source, "last_be", Signal())
         fsm.act("ALIGNED-DATA-COPY",
             source.valid.eq(sink.valid),
             source.last.eq(sink.last),
+            source_last_be.eq(last_be),
             source.data.eq(sink.data),
             If(source.valid & source.ready,
                sink.ready.eq(1),
@@ -245,6 +258,7 @@ class Packetizer(Module):
         fsm.act("UNALIGNED-DATA-COPY",
             source.valid.eq(sink.valid | sink_d.last),
             source.last.eq(sink_d.last),
+            source_last_be.eq(last_be_d),
             If(fsm_from_idle,
                 source.data[:max(header_leftover*8, 1)].eq(sr[min(header_offset_multiplier*data_width, len(sr)-1):])
             ).Else(
@@ -263,12 +277,6 @@ class Packetizer(Module):
         # Error ------------------------------------------------------------------------------------
         if hasattr(sink, "error") and hasattr(source, "error"):
             self.comb += source.error.eq(sink.error)
-
-        # Last BE ----------------------------------------------------------------------------------
-        if hasattr(sink, "last_be") and hasattr(source, "last_be"):
-            rotate_by = header.length%bytes_per_clk
-            x = [sink.last_be[(i + rotate_by)%bytes_per_clk] for i in range(bytes_per_clk)]
-            self.comb += source.last_be.eq(Cat(*x))
 
 # Depacketizer -------------------------------------------------------------------------------------
 
@@ -381,3 +389,34 @@ class Depacketizer(Module):
             x = [sink.last_be[(i - (bytes_per_clk - header_leftover))%bytes_per_clk]
                 for i in range(bytes_per_clk)]
             self.comb += source.last_be.eq(Cat(*x))
+
+# PacketFIFO ---------------------------------------------------------------------------------------
+
+class PacketFIFO(Module):
+    def __init__(self, description, depth, buffered=False):
+        self.sink   = sink   = stream.Endpoint(description)
+        self.source = source = stream.Endpoint(description)
+
+        # # #
+
+        # Create the FIFO.
+        self.submodules.fifo = fifo = stream.SyncFIFO(description, depth, buffered)
+
+        # Connect our sink to FIFO.sink.
+        self.comb += sink.connect(fifo.sink)
+
+        # Count packets in the FIFO.
+        count = Signal(int(log2(depth))+1)
+        inc   = (sink.valid   &   sink.ready &   sink.last)
+        dec   = (source.valid & source.ready & source.last)
+        self.sync += If(inc & ~dec, count.eq(count + 1))
+        self.sync += If(~inc & dec, count.eq(count - 1))
+
+        # Connect FIFO.sink to source only we have at least one packet in the FIFO.
+        self.comb += [
+            fifo.source.connect(source, omit={"valid", "ready"}),
+            If(count > 0,
+                source.valid.eq(1),
+                fifo.source.ready.eq(source.ready)
+            )
+        ]

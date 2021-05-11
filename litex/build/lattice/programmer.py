@@ -33,8 +33,15 @@ class OpenOCDJTAGProgrammer(GenericProgrammer):
 
     def load_bitstream(self, bitstream_file):
         config   = self.find_config()
-        svf_file = bitstream_file.replace(".bit", ".svf")
-        self.call(["openocd", "-f", config, "-c", "transport select jtag; init; svf quiet progress \"{}\"; exit".format(svf_file)])
+        assert bitstream_file.endswith(".bit") or bitstream_file.endswith(".svf")
+        if bitstream_file.endswith(".bit"):
+            from litex.build.lattice.bit_to_svf import bit_to_svf
+            bit = bitstream_file
+            svf = bit.replace(".bit", ".svf")
+            bit_to_svf(bit=bit, svf=svf)
+        else:
+            svf = bitstream_file
+        self.call(["openocd", "-f", config, "-c", "transport select jtag; init; svf quiet progress \"{}\"; exit".format(svf)])
 
     def flash(self, address, data, verify=True):
         config      = self.find_config()
@@ -140,3 +147,30 @@ class UJProg(GenericProgrammer):
 
     def load_bitstream(self, bitstream_file):
         self.call(["ujprog", bitstream_file])
+
+# EcpDapProgrammer -------------------------------------------------------------------------------
+
+class EcpDapProgrammer(GenericProgrammer):
+    """ECPDAP allows you to program ECP5 FPGAs and attached SPI flash using CMSIS-DAP probes in JTAG mode.
+
+    You can get `ecpdap` here: https://github.com/adamgreig/ecpdap
+    """
+    needs_bitreverse = False
+
+    def __init__(self, frequency=8_000_000):
+        self.frequency_khz = frequency // 1000
+
+    def flash(self, address, bitstream_file):
+        self.call(["ecpdap",
+            "flash", "write",
+            "--freq", str(self.frequency_khz),
+            "--offset", str(address),
+            bitstream_file
+        ])
+
+    def load_bitstream(self, bitstream_file):
+        self.call(["ecpdap",
+            "program",
+            "--freq", str(self.frequency_khz),
+            bitstream_file
+        ])

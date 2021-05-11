@@ -15,7 +15,8 @@ from litex import get_data_mod
 from litex.soc.interconnect import wishbone
 from litex.soc.cores.cpu import CPU
 
-CPU_VARIANTS = ["standard", "linux"]
+CPU_VARIANTS = ["standard", "standard+fpu", "linux", "linux+fpu",
+                "linux+smp", "linux+smp+fpu"]
 
 
 class MOR1KX(CPU):
@@ -50,7 +51,13 @@ class MOR1KX(CPU):
     def gcc_flags(self):
         flags =  "-mhard-mul "
         flags += "-mhard-div "
+        flags += "-mcmov "
         flags += "-D__mor1kx__ "
+
+        if "linux" in self.variant:
+            flags += "-mror "
+            flags += "-msext "
+
         return flags
 
     @property
@@ -77,7 +84,7 @@ class MOR1KX(CPU):
         self.memory_buses = []
 
 
-        if variant == "linux":
+        if "linux" in variant:
             self.mem_map = self.mem_map_linux
 
         # # #
@@ -107,7 +114,17 @@ class MOR1KX(CPU):
             p_DBUS_WB_TYPE              = "B3_REGISTERED_FEEDBACK",
         )
 
-        if variant == "linux":
+        if "smp" in variant:
+           cpu_args.update(
+               p_OPTION_RF_NUM_SHADOW_GPR = 1,
+           )
+
+        if "fpu" in variant:
+            cpu_args.update(
+                p_FEATURE_FPU = "ENABLED",
+            )
+
+        if "linux" in variant:
             cpu_args.update(
                 # Linux needs the memory management units.
                 p_FEATURE_IMMU  = "ENABLED",
@@ -115,6 +132,8 @@ class MOR1KX(CPU):
                 # FIXME: Currently we need the or1k timer when we should be
                 # using the litex timer.
                 p_FEATURE_TIMER = "ENABLED",
+                p_FEATURE_ROR = "ENABLED",
+                p_FEATURE_EXT = "ENABLED",
             )
             # FIXME: Check if these are needed?
             use_defaults = (
