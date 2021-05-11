@@ -1,5 +1,8 @@
-# This file is Copyright (c) 2018-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2018-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from litex.build.generic_platform import *
 from litex.build.lattice import LatticePlatform
@@ -30,6 +33,14 @@ _io = [
         Subsignal("mosi", Pins("J3"), Misc("PULLMODE=UP")),
         Subsignal("cs_n", Pins("H1"), Misc("PULLMODE=UP")),
         Subsignal("miso", Pins("K2"), Misc("PULLMODE=UP")),
+        Misc("SLEWRATE=FAST"),
+        IOStandard("LVCMOS33"),
+    ),
+
+    ("sdcard", 0,
+        Subsignal("clk",  Pins("J1")),
+        Subsignal("cmd",  Pins("J3"), Misc("PULLMODE=UP")),
+        Subsignal("data", Pins("K2 K1 H2 H1"), Misc("PULLMODE=UP")),
         Misc("SLEWRATE=FAST"),
         IOStandard("LVCMOS33"),
     ),
@@ -101,6 +112,7 @@ class Platform(LatticePlatform):
     default_clk_period = 1e9/25e6
 
     def __init__(self, device="LFE5U-45F", **kwargs):
+        assert device in ["LFE5U-25F", "LFE5U-45F", "LFE5U-85F"]
         LatticePlatform.__init__(self, device + "-6BG381C", _io, **kwargs)
 
     def create_programmer(self):

@@ -65,7 +65,7 @@ struct session_s {
 static int spdeeprom_start();
 static int spdeeprom_new(void **sess, char *args);
 static int spdeeprom_add_pads(void *sess, struct pad_list_s *plist);
-static int spdeeprom_tick(void *sess);
+static int spdeeprom_tick(void *sess, uint64_t time_ps);
 // EEPROM simulation
 static void fsm_tick(struct session_s *s);
 static enum SerialState state_serial_next(struct session_s *s);
@@ -99,7 +99,7 @@ static int spdeeprom_start()
 
 static int spdeeprom_new(void **sess, char *args)
 {
-  int ret=RC_OK;
+  int ret = RC_OK;
   int i;
   char *spd_filename;
   FILE *spd_file;
@@ -123,7 +123,7 @@ static int spdeeprom_new(void **sess, char *args)
     spd_file = fopen(spd_filename, "r");
   }
   if (spd_filename != NULL && spd_file != NULL) {
-    DBG("[spdeeprom] loading EEPROM contents from file: %s\n", spd_filename);
+    printf("[spdeeprom] loading EEPROM contents from file: %s\n", spd_filename);
     spdeeprom_from_file(s, spd_file);
     fclose(spd_file);
   } else {  // fill in the memory with some data
@@ -162,15 +162,16 @@ out:
   return ret;
 }
 
-static int spdeeprom_tick(void *sess)
+static int spdeeprom_tick(void *sess, uint64_t time_ps)
 {
+  static struct clk_edge_t edge;
   struct session_s *s = (struct session_s*) sess;
 
   if (s->sda_in == 0 || s->sda_out == 0 || s->scl == 0) {
       return RC_OK;
   }
 
-  if(*s->sys_clk == 0) {
+  if(!clk_pos_edge(&edge, *s->sys_clk)) {
     return RC_OK;
   }
 
@@ -389,7 +390,7 @@ static void spdeeprom_from_file(struct session_s *s, FILE *file)
     if ((n_read = getline(&line, &bufsize, file)) < 0) {
       break;
     }
-    byte = strtoul(line, &c, 0);
+    byte = strtoul(line, &c, 16);
     if (c == line) {
       DBG("[spdeeprom] Incorrect value at line %d\n", i);
     } else {
@@ -403,7 +404,7 @@ static void spdeeprom_from_file(struct session_s *s, FILE *file)
 
 static int litex_sim_module_pads_get(struct pad_s *pads, char *name, void **signal)
 {
-  int ret;
+  int ret = RC_OK;
   void *sig=NULL;
   int i;
 

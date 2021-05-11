@@ -1,8 +1,11 @@
-# This file is Copyright (c) 2014 Yann Sionneau <ys@m-labs.hk>
-# This file is Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2014 Yann Sionneau <ys@m-labs.hk>
+# Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from math import log2
 
@@ -178,14 +181,10 @@ def _get_uart_fifo(depth, sink_cd="sys", source_cd="sys"):
         return stream.SyncFIFO([("data", 8)], depth, buffered=True)
 
 def UARTPHY(pads, clk_freq, baudrate):
-    # FT245 async FIFO mode (baudrate ignored)
+    # FT245 Asynchronous FIFO mode (baudrate ignored)
     if hasattr(pads, "rd_n") and hasattr(pads, "wr_n"):
         from litex.soc.cores.usb_fifo import FT245PHYAsynchronous
         return FT245PHYAsynchronous(pads, clk_freq)
-    # FT245 sync FIFO mode (baudrate ignored)
-    if hasattr(pads, "rd_n") and hasattr(pads, "wr_n") and hasattr(pads, "oe_n"):
-        from litex.soc.cores.usb_fifo import FT245PHYSynchronous
-        return FT245PHYSynchronous(pads, clk_freq)
     # RS232
     else:
         return  RS232PHY(pads, clk_freq, baudrate)
@@ -204,6 +203,9 @@ class UART(Module, AutoCSR, UARTInterface):
         self.ev.tx = EventSourceProcess()
         self.ev.rx = EventSourceProcess()
         self.ev.finalize()
+
+        self._txempty = CSRStatus()
+        self._rxfull  = CSRStatus()
 
         # # #
 
@@ -224,6 +226,7 @@ class UART(Module, AutoCSR, UARTInterface):
             tx_fifo.sink.valid.eq(self._rxtx.re),
             tx_fifo.sink.data.eq(self._rxtx.r),
             self._txfull.status.eq(~tx_fifo.sink.ready),
+            self._txempty.status.eq(~tx_fifo.source.valid),
             tx_fifo.source.connect(self.source),
             # Generate TX IRQ when tx_fifo becomes non-full
             self.ev.tx.trigger.eq(~tx_fifo.sink.ready)
@@ -236,6 +239,7 @@ class UART(Module, AutoCSR, UARTInterface):
         self.comb += [
             self.sink.connect(rx_fifo.sink),
             self._rxempty.status.eq(~rx_fifo.source.valid),
+            self._rxfull.status.eq(~rx_fifo.sink.ready),
             self._rxtx.w.eq(rx_fifo.source.data),
             rx_fifo.source.ready.eq(self.ev.rx.clear | (rx_fifo_rx_we & self._rxtx.we)),
             # Generate RX IRQ when rx_fifo becomes non-empty

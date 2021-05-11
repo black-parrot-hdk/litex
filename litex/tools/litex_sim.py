@@ -19,6 +19,7 @@ from litex.soc.integration.soc_sdram import *
 from litex.soc.integration.builder import *
 from litex.soc.integration.soc import *
 from litex.soc.cores.bitbang import *
+from litex.soc.cores.cpu import CPUS
 
 from litedram import modules as litedram_modules
 from litedram.modules import parse_spd_hexdump
@@ -226,13 +227,12 @@ class SimSoC(SoCCore):
         #assert not (with_ethernet and with_etherbone)
 
         if with_ethernet and with_etherbone:
-            dw = 8
             etherbone_ip_address = convert_ip(etherbone_ip_address)
             # Ethernet PHY
             self.submodules.ethphy = LiteEthPHYModel(self.platform.request("eth", 0))
             self.add_csr("ethphy")
             # Ethernet MAC
-            self.submodules.ethmac = LiteEthMAC(phy=self.ethphy, dw=dw,
+            self.submodules.ethmac = LiteEthMAC(phy=self.ethphy, dw=8,
                 interface  = "hybrid",
                 endianness = self.cpu.endianness,
                 hw_mac     = etherbone_mac_address)
@@ -243,10 +243,10 @@ class SimSoC(SoCCore):
             self.add_csr("ethmac")
             self.add_interrupt("ethmac")
             # HW ethernet
-            self.submodules.arp = LiteEthARP(self.ethmac, etherbone_mac_address, etherbone_ip_address, sys_clk_freq, dw=dw)
-            self.submodules.ip = LiteEthIP(self.ethmac, etherbone_mac_address, etherbone_ip_address, self.arp.table, dw=dw)
-            self.submodules.icmp = LiteEthICMP(self.ip, etherbone_ip_address, dw=dw)
-            self.submodules.udp = LiteEthUDP(self.ip, etherbone_ip_address, dw=dw)
+            self.submodules.arp  = LiteEthARP(self.ethmac, etherbone_mac_address, etherbone_ip_address, sys_clk_freq, dw=8)
+            self.submodules.ip   = LiteEthIP(self.ethmac, etherbone_mac_address, etherbone_ip_address, self.arp.table, dw=8)
+            self.submodules.icmp = LiteEthICMP(self.ip, etherbone_ip_address, dw=8)
+            self.submodules.udp  = LiteEthUDP(self.ip, etherbone_ip_address, dw=8)
             # Etherbone
             self.submodules.etherbone = LiteEthEtherbone(self.udp, 1234, mode="master")
             self.add_wb_master(self.etherbone.wishbone.bus)
@@ -309,7 +309,7 @@ class SimSoC(SoCCore):
 
         # SDCard -----------------------------------------------------------------------------------
         if with_sdcard:
-            self.add_sdcard("sdcard", with_emulator=True)
+            self.add_sdcard("sdcard", use_emulator=True)
 
 # Build --------------------------------------------------------------------------------------------
 
@@ -343,23 +343,22 @@ def main():
     soc_kwargs     = soc_sdram_argdict(args)
     builder_kwargs = builder_argdict(args)
 
-    sim_config = SimConfig(default_clk="sys_clk")
+    sys_clk_freq = int(1e6)
+    sim_config = SimConfig()
+    sim_config.add_clocker("sys_clk", freq_hz=sys_clk_freq)
 
     # Configuration --------------------------------------------------------------------------------
 
-    cpu_endianness = "little"
-    if "cpu_type" in soc_kwargs:
-        if soc_kwargs["cpu_type"] in ["mor1kx", "lm32"]:
-            cpu_endianness = "big"
+    cpu = CPUS[soc_kwargs.get("cpu_type", "vexriscv")]
     if soc_kwargs["uart_name"] == "serial":
         soc_kwargs["uart_name"] = "sim"
         sim_config.add_module("serial2console", "serial")
     if args.rom_init:
-        soc_kwargs["integrated_rom_init"] = get_mem_data(args.rom_init, cpu_endianness)
+        soc_kwargs["integrated_rom_init"] = get_mem_data(args.rom_init, cpu.endianness)
     if not args.with_sdram:
         soc_kwargs["integrated_main_ram_size"] = 0x10000000 # 256 MB
         if args.ram_init is not None:
-            soc_kwargs["integrated_main_ram_init"] = get_mem_data(args.ram_init, cpu_endianness)
+            soc_kwargs["integrated_main_ram_init"] = get_mem_data(args.ram_init, cpu.endianness)
     else:
         assert args.ram_init is None
         soc_kwargs["integrated_main_ram_size"] = 0x0
@@ -383,7 +382,7 @@ def main():
         with_analyzer  = args.with_analyzer,
         with_i2c       = args.with_i2c,
         with_sdcard    = args.with_sdcard,
-        sdram_init     = [] if args.sdram_init is None else get_mem_data(args.sdram_init, cpu_endianness),
+        sdram_init     = [] if args.sdram_init is None else get_mem_data(args.sdram_init, cpu.endianness),
         **soc_kwargs)
     if args.ram_init is not None:
         soc.add_constant("ROM_BOOT_ADDRESS", 0x40000000)

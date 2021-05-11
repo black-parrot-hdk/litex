@@ -1,3 +1,6 @@
+#
+# This file is part of LiteX.
+#
 # This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
 # This file is Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
 # This file is Copyright (c) 2018-2019 Antmicro <www.antmicro.com>
@@ -6,7 +9,7 @@
 # This file is Copyright (c) 2018 William D. Jones <thor0505@comcast.net>
 # This file is Copyright (c) 2020 Xiretza <xiretza@xiretza.xyz>
 # This file is Copyright (c) 2020 Piotr Esden-Tempski <piotr@esden.net>
-# License: BSD
+# SPDX-License-Identifier: BSD-2-Clause
 
 
 import os
@@ -17,9 +20,15 @@ import shutil
 from litex import get_data_mod
 from litex.build.tools import write_to_file
 from litex.soc.integration import export, soc_core
+from litex.soc.cores import cpu
 
-__all__ = ["soc_software_packages", "soc_directory",
-           "Builder", "builder_args", "builder_argdict"]
+__all__ = [
+    "soc_software_packages",
+    "soc_directory",
+    "Builder",
+    "builder_args",
+    "builder_argdict"
+]
 
 
 soc_software_packages = [
@@ -84,26 +93,12 @@ class Builder:
         os.makedirs(self.include_dir, exist_ok=True)
         os.makedirs(self.generated_dir, exist_ok=True)
 
-        if self.soc.cpu_type is not None:
+        if self.soc.cpu_type not in [None, "zynq7000"]:
             variables_contents = []
             def define(k, v):
                 variables_contents.append("{}={}\n".format(k, _makefile_escape(v)))
 
             for k, v in export.get_cpu_mak(self.soc.cpu, self.compile_software):
-                define(k, v)
-            # Distinguish between LiteX and MiSoC.
-            define("LITEX", "1")
-            # Distinguish between applications running from main RAM and
-            # flash for user-provided software packages.
-            exec_profiles = {
-                "COPY_TO_MAIN_RAM" : "0",
-                "EXECUTE_IN_PLACE" : "0"
-            }
-            if "main_ram" in self.soc.mem_regions.keys():
-                exec_profiles["COPY_TO_MAIN_RAM"] = "1"
-            else:
-                exec_profiles["EXECUTE_IN_PLACE"] = "1"
-            for k, v in exec_profiles.items():
                 define(k, v)
             define(
                 "COMPILER_RT_DIRECTORY",

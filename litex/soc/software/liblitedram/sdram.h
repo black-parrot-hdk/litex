@@ -3,6 +3,9 @@
 
 #include <generated/csr.h>
 
+int sdrdatabits(void);
+int sdrfreq(void);
+
 void sdrsw(void);
 void sdrhw(void);
 void sdrrow(unsigned int row);
@@ -17,12 +20,6 @@ int write_level(void);
 
 int sdrlevel(void);
 
-int memtest_silent(void);
-int memtest(void);
 int sdrinit(void);
-
-#if defined(DDRPHY_CMD_DELAY) || defined(USDDRPHY_DEBUG)
-void ddrphy_cdly(unsigned int delay);
-#endif
 
 #endif /* __SDRAM_H */

@@ -1,6 +1,9 @@
-# This file is Copyright (c) 2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2019 Benjamin Herrenschmidt <benh@ozlabs.org>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2019 Benjamin Herrenschmidt <benh@ozlabs.org>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 
@@ -41,6 +44,7 @@ class Microwatt(CPU):
         flags += "-mlittle-endian "
         flags += "-mstrict-align "
         flags += "-fno-stack-protector "
+        flags += "-mcmodel=small "
         flags += "-D__microwatt__ "
         return flags
 
@@ -150,6 +154,9 @@ class Microwatt(CPU):
 
             # Writeback
             "writeback.vhdl",
+
+            # MMU
+            "mmu.vhdl",
 
             # Core
             "core_debug.vhdl",

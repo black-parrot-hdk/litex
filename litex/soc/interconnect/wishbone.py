@@ -1,7 +1,12 @@
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
+# SPDX-License-Identifier: BSD-2-Clause
+
+from math import log2
 
 from functools import reduce
 from operator import or_
@@ -13,7 +18,7 @@ from migen.genlib.misc import split, displacer, chooser, WaitTimer
 
 from litex.build.generic_platform import *
 
-from litex.soc.interconnect import csr
+from litex.soc.interconnect import csr, csr_bus
 
 # Wishbone Definition ------------------------------------------------------------------------------
 
@@ -229,12 +234,13 @@ class DownConverter(Module):
 
     """
     def __init__(self, master, slave):
-        dw_from = len(master.dat_r)
+        dw_from = len(master.dat_w)
         dw_to   = len(slave.dat_w)
         ratio   = dw_from//dw_to
 
         # # #
 
+        skip    = Signal()
         counter = Signal(max=ratio)
 
         # Control Path
@@ -245,34 +251,18 @@ class DownConverter(Module):
         fsm.act("IDLE",
             NextValue(counter, 0),
             If(master.stb & master.cyc,
-                If(master.we,
-                    NextState("WRITE")
-                ).Else(
-                    NextState("READ")
-                )
+                NextState("CONVERT"),
             )
         )
-        fsm.act("WRITE",
+        fsm.act("CONVERT",
             slave.adr.eq(Cat(counter, master.adr)),
-            slave.we.eq(1),
-            slave.cyc.eq(1),
+            Case(counter, {i: slave.sel.eq(master.sel[i*dw_to//8:]) for i in range(ratio)}),
             If(master.stb & master.cyc,
-                slave.stb.eq(1),
-                If(slave.ack,
-                    NextValue(counter, counter + 1),
-                    If(counter == (ratio - 1),
-                        master.ack.eq(1),
-                        NextState("IDLE")
-                    )
-                )
-            )
-        )
-        fsm.act("READ",
-            slave.adr.eq(Cat(counter, master.adr)),
-            slave.cyc.eq(1),
-            If(master.stb & master.cyc,
-                slave.stb.eq(1),
-                If(slave.ack,
+                skip.eq(slave.sel == 0),
+                slave.we.eq(master.we),
+                slave.cyc.eq(~skip),
+                slave.stb.eq(~skip),
+                If(slave.ack | skip,
                     NextValue(counter, counter + 1),
                     If(counter == (ratio - 1),
                         master.ack.eq(1),
@@ -283,19 +273,32 @@ class DownConverter(Module):
         )
 
         # Write Datapath
-        cases = {}
-        for i in range(ratio):
-            cases[i] = [
-                slave.sel.eq(master.sel[i*dw_to//8:]),
-                slave.dat_w.eq(master.dat_w[i*dw_to:]),
-            ]
-        self.comb += Case(counter, cases)
+        self.comb += Case(counter, {i: slave.dat_w.eq(master.dat_w[i*dw_to:]) for i in range(ratio)})
 
         # Read Datapath
         dat_r = Signal(dw_from, reset_less=True)
         self.comb += master.dat_r.eq(Cat(dat_r[dw_to:], slave.dat_r))
-        self.sync += If(slave.ack, dat_r.eq(master.dat_r))
+        self.sync += If(slave.ack | skip, dat_r.eq(master.dat_r))
 
+class UpConverter(Module):
+    """UpConverter"""
+    def __init__(self, master, slave):
+        dw_from = len(master.dat_w)
+        dw_to   = len(slave.dat_w)
+        ratio   = dw_to//dw_from
+
+        # # #
+
+        self.comb += master.connect(slave, omit={"adr", "sel", "dat_w", "dat_r"})
+        cases = {}
+        for i in range(ratio):
+            cases[i] = [
+                slave.adr.eq(master.adr[int(log2(ratio)):]),
+                slave.sel[i*dw_from//8:(i+1)*dw_from//8].eq(2**(dw_from//8) - 1),
+                slave.dat_w[i*dw_from:(i+1)*dw_from].eq(master.dat_w),
+                master.dat_r.eq(slave.dat_r[i*dw_from:(i+1)*dw_from]),
+        ]
+        self.comb += Case(master.adr[:int(log2(ratio))], cases)
 
 class Converter(Module):
     """Converter
@@ -316,7 +319,8 @@ class Converter(Module):
             downconverter = DownConverter(master, slave)
             self.submodules += downconverter
         elif dw_from < dw_to:
-            raise NotImplementedError
+            upconverter = UpConverter(master, slave)
+            self.submodules += upconverter
         else:
             self.comb += master.connect(slave)
 
@@ -365,7 +369,7 @@ class SRAM(Module):
 # Wishbone To CSR ----------------------------------------------------------------------------------
 
 class Wishbone2CSR(Module):
-    def __init__(self, bus_wishbone=None, bus_csr=None):
+    def __init__(self, bus_wishbone=None, bus_csr=None, register=True):
         self.csr = bus_csr
         if self.csr is None:
             # If no CSR bus provided, create it with default parameters.
@@ -377,24 +381,43 @@ class Wishbone2CSR(Module):
 
         # # #
 
-        self.comb += [
-            self.csr.dat_w.eq(self.wishbone.dat_w),
-            self.wishbone.dat_r.eq(self.csr.dat_r)
-        ]
-
-        fsm = FSM(reset_state="WRITE-READ")
-        self.submodules += fsm
-        fsm.act("WRITE-READ",
-            If(self.wishbone.cyc & self.wishbone.stb,
-                self.csr.adr.eq(self.wishbone.adr),
-                self.csr.we.eq(self.wishbone.we & (self.wishbone.sel != 0)),
+        if register:
+            fsm = FSM(reset_state="IDLE")
+            self.submodules += fsm
+            fsm.act("IDLE",
+                NextValue(self.csr.dat_w, self.wishbone.dat_w),
+                If(self.wishbone.cyc & self.wishbone.stb,
+                    NextValue(self.csr.adr, self.wishbone.adr),
+                    NextValue(self.csr.we, self.wishbone.we & (self.wishbone.sel != 0)),
+                    NextState("WRITE-READ")
+                )
+            )
+            fsm.act("WRITE-READ",
+                NextValue(self.csr.adr, 0),
+                NextValue(self.csr.we, 0),
                 NextState("ACK")
             )
-        )
-        fsm.act("ACK",
-            self.wishbone.ack.eq(1),
-            NextState("WRITE-READ")
-        )
+            fsm.act("ACK",
+                self.wishbone.ack.eq(1),
+                self.wishbone.dat_r.eq(self.csr.dat_r),
+                NextState("IDLE")
+            )
+        else:
+            fsm = FSM(reset_state="WRITE-READ")
+            self.submodules += fsm
+            fsm.act("WRITE-READ",
+                self.csr.dat_w.eq(self.wishbone.dat_w),
+                If(self.wishbone.cyc & self.wishbone.stb,
+                    self.csr.adr.eq(self.wishbone.adr),
+                    self.csr.we.eq(self.wishbone.we & (self.wishbone.sel != 0)),
+                    NextState("ACK")
+                )
+            )
+            fsm.act("ACK",
+                self.wishbone.ack.eq(1),
+                self.wishbone.dat_r.eq(self.csr.dat_r),
+                NextState("WRITE-READ")
+            )
 
 # Wishbone Cache -----------------------------------------------------------------------------------
 

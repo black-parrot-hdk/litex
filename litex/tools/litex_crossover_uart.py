@@ -8,10 +8,16 @@
 import os
 import pty
 import threading
+import argparse
 
 from litex import RemoteClient
 
-wb = RemoteClient()
+parser = argparse.ArgumentParser(description="LiteX Crossover UART bridge tool")
+parser.add_argument("--host",         default="localhost",  help="Host IP address")
+parser.add_argument("--base-address", default="0x00000000", help="Wishbone base address")
+args = parser.parse_args()
+
+wb = RemoteClient(host=args.host, base_address=int(args.base_address, 0))
 wb.open()
 
 # # #
