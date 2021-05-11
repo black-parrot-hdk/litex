@@ -28,6 +28,7 @@ from liteeth.phy.rmii import LiteEthPHYRMII
 
 class _CRG(Module):
     def __init__(self, platform, sys_clk_freq):
+        self.rst = Signal()
         self.clock_domains.cd_sys       = ClockDomain()
         self.clock_domains.cd_sys2x     = ClockDomain(reset_less=True)
         self.clock_domains.cd_sys2x_dqs = ClockDomain(reset_less=True)
@@ -37,7 +38,7 @@ class _CRG(Module):
         # # #
 
         self.submodules.pll = pll = S7MMCM(speedgrade=-1)
-        self.comb += pll.reset.eq(~platform.request("cpu_reset"))
+        self.comb += pll.reset.eq(~platform.request("cpu_reset") | self.rst)
         pll.register_clkin(platform.request("clk100"), 100e6)
         pll.create_clkout(self.cd_sys,       sys_clk_freq)
         pll.create_clkout(self.cd_sys2x,     2*sys_clk_freq)
@@ -97,19 +98,21 @@ class BaseSoC(SoCCore):
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on Nexys4DDR")
-    parser.add_argument("--build", action="store_true", help="Build bitstream")
-    parser.add_argument("--load",  action="store_true", help="Load bitstream")
+    parser.add_argument("--build",           action="store_true", help="Build bitstream")
+    parser.add_argument("--load",            action="store_true", help="Load bitstream")
+    parser.add_argument("--sys-clk-freq",    default=75e6,        help="System clock frequency (default: 75MHz)")
+    parser.add_argument("--with-ethernet",   action="store_true", help="Enable Ethernet support")
+    parser.add_argument("--with-spi-sdcard", action="store_true", help="Enable SPI-mode SDCard support")
+    parser.add_argument("--with-sdcard",     action="store_true", help="Enable SDCard support")
     builder_args(parser)
     soc_sdram_args(parser)
-    parser.add_argument("--sys-clk-freq",  default=75e6,          help="System clock frequency (default=75MHz)")
-    parser.add_argument("--with-ethernet", action="store_true",   help="Enable Ethernet support")
-    parser.add_argument("--with-spi-sdcard", action="store_true", help="Enable SPI-mode SDCard support")
-    parser.add_argument("--with-sdcard", action="store_true",     help="Enable SDCard support")
     args = parser.parse_args()
 
-    soc = BaseSoC(sys_clk_freq=int(float(args.sys_clk_freq)),
-        with_ethernet=args.with_ethernet,
-        **soc_sdram_argdict(args))
+    soc = BaseSoC(
+        sys_clk_freq  = int(float(args.sys_clk_freq)),
+        with_ethernet = args.with_ethernet,
+        **soc_sdram_argdict(args)
+    )
     assert not (args.with_spi_sdcard and args.with_sdcard)
     if args.with_spi_sdcard:
         soc.add_spi_sdcard()

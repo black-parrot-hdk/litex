@@ -56,7 +56,7 @@ def generate_dts(d):
                     #size-cells    = <0>;
                     timebase-frequency = <{sys_clk_freq}>;
                     cpu@0 {{
-                            clock-frequency = <0x0>;
+                            clock-frequency = <{sys_clk_freq}>;
                             compatible = "spinalhdl,vexriscv", "sifive,rocket0", "riscv";
                             d-cache-block-size = <0x40>;
                             d-cache-sets = <0x40>;
@@ -125,12 +125,13 @@ def generate_dts(d):
     # SoC ----------------------------------------------------------------------------------------------
 
     dts += """
-        soc {
+        soc {{
                 #address-cells = <1>;
                 #size-cells    = <1>;
+                bus-frequency  = <{sys_clk_freq}>;
                 compatible = "simple-bus";
                 ranges;
-"""
+""".format(sys_clk_freq=d["constants"]["config_clock_frequency"])
 
     # Interrupt controller -----------------------------------------------------------------------------
 

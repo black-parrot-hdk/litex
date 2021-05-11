@@ -140,20 +140,82 @@ class EventManager(Module, AutoCSR):
 
     def do_finalize(self):
         sources_u = [v for k, v in xdir(self, True) if isinstance(v, _EventSource)]
-        sources = sorted(sources_u, key=lambda x: x.duid)
-        n = len(sources)
-        self.status = CSR(n)
-        self.pending = CSR(n)
-        self.enable = CSRStorage(n)
+        sources   = sorted(sources_u, key=lambda x: x.duid)
+        n         = len(sources)
 
+        # Common
+        def get_source_name(src, i):
+            r = getattr(src, "name", None)
+            if r is None:
+                r = f"event{i}"
+            return r
+
+        def get_pending_source_description(src):
+            r = ""
+            if getattr(src, "name", None) is not None:
+                r += "`1` if a `{}` event occurred. ".format(src.name)
+            else:
+                r += "`1` if a this particular event occurred. "
+            if getattr(src, "description", None) is not None:
+                return src.description
+            elif isinstance(src, EventSourceLevel):
+                return r + "This Event is **level triggered** when the signal is **high**."
+            elif isinstance(src, EventSourcePulse):
+                return r + "This Event is triggered on a **rising** edge."
+            elif isinstance(src, EventSourceProcess):
+                return r + "This Event is triggered on a **falling** edge."
+            else:
+                return r + "This Event uses an unknown method of triggering."
+
+        # Status register
+        fields = []
         for i, source in enumerate(sources):
-            self.comb += [
-                self.status.w[i].eq(source.status),
-                If(self.pending.re & self.pending.r[i], source.clear.eq(1)),
-                self.pending.w[i].eq(source.pending)
-            ]
+            # Get source name and use default if None.
+            name = get_source_name(source, i)
+            # Get description and use default description if None.
+            desc = getattr(source, "description", None)
+            if desc is None:
+                desc = "This register contains the current raw level of the {} event trigger.  Writes to this register have no effect.".format(str(name))
+            # Add CSRField
+            fields.append(CSRField(name=name, size=1, description=f"Level of the ``{name}`` event"))
+        self.status = CSRStatus(n, description=desc, fields=fields)
 
-        irqs = [self.pending.w[i] & self.enable.storage[i] for i in range(n)]
+        # Pending Register
+        fields = []
+        for i, source in enumerate(sources):
+            # Get source name and use default if None.
+            name = get_source_name(source, i)
+            # Get description and use default description if None.
+            desc = getattr(source, "description", None)
+            if desc is None:
+                desc = "When a  {} event occurs, the corresponding bit will be set in this register.  To clear the Event, set the corresponding bit in this register.".format(str(name))
+            # Add CSRField
+            fields.append(CSRField(name=name, size=1, description=get_pending_source_description(source)))
+        self.pending = CSRStatus(n, description=desc, fields=fields, read_only=False)
+
+        # Enable Register
+        fields = []
+        for i, source in enumerate(sources):
+            # Get source name and use default if None.
+            name = get_source_name(source, i)
+            # Get description and use default description if None.
+            desc = getattr(source, "description", None)
+            if desc is None:
+                desc = "This register enables the corresponding {} events.  Write a ``0`` to this register to disable individual events.".format(str(name))
+            # Add CSRField
+            fields.append(CSRField(name=name, offset=i, description=f"Write a ``1`` to enable the ``{name}`` Event"))
+        self.enable = CSRStorage(n, description=desc, fields=fields)
+
+        # Connect Events/Fields
+        for i, source in enumerate(sources):
+            # Get source name and use default if None.
+            name = get_source_name(source, i)
+            self.comb += [
+                getattr(self.status.fields,  name).eq(source.status),
+                getattr(self.pending.fields, name).eq(source.pending),
+                If(self.pending.re & self.pending.r[i], source.clear.eq(1)),
+            ]
+            irqs = [self.pending.status[i] & self.enable.storage[i] for i in range(n)]
         self.comb += self.irq.eq(reduce(or_, irqs))
 
     def __setattr__(self, name, value):

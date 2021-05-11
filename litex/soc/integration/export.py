@@ -219,7 +219,7 @@ def get_csr_header(regions, constants, csr_base=None, with_access_functions=True
             for csr in region.obj:
                 nr = (csr.size + region.busword - 1)//region.busword
                 r += _get_rw_functions_c(name + "_" + csr.name, origin, nr, region.busword, alignment,
-                    isinstance(csr, CSRStatus), with_access_functions)
+                    getattr(csr, "read_only", False), with_access_functions)
                 origin += alignment//8*nr
                 if hasattr(csr, "fields"):
                     for field in csr.fields.fields:
@@ -308,7 +308,7 @@ def get_csr_svd(soc, vendor="litex", name="soc", description=None):
         svd.append('                    <addressOffset>0x{:04x}</addressOffset>'.format(csr_address))
         svd.append('                    <resetValue>0x{:02x}</resetValue>'.format(csr.reset_value))
         svd.append('                    <size>{}</size>'.format(length))
-        svd.append('                    <access>{}</access>'.format(csr.access))
+        # svd.append('                    <access>{}</access>'.format(csr.access))  # 'access' is a lie: "read-only" registers can legitimately change state based on a write, and is in fact used to handle the "pending" field in events
         csr_address = csr_address + 4
         svd.append('                    <fields>')
         if hasattr(csr, "fields") and len(csr.fields) > 0:
@@ -347,9 +347,9 @@ def get_csr_svd(soc, vendor="litex", name="soc", description=None):
         interrupts[csr] = irq
 
     documented_regions = []
-    for name, region in soc.csr.regions.items():
+    for region_name, region in soc.csr.regions.items():
         documented_regions.append(DocumentedCSRRegion(
-            name           = name,
+            name           = region_name,
             region         = region,
             csr_data_width = soc.csr.data_width)
         )
@@ -431,9 +431,9 @@ def get_csr_svd(soc, vendor="litex", name="soc", description=None):
     if len(soc.mem_regions) > 0:
         svd.append('    <vendorExtensions>')
         svd.append('        <memoryRegions>')
-        for name, region in soc.mem_regions.items():
+        for region_name, region in soc.mem_regions.items():
             svd.append('            <memoryRegion>')
-            svd.append('                <name>{}</name>'.format(name.upper()))
+            svd.append('                <name>{}</name>'.format(region_name.upper()))
             svd.append('                <baseAddress>0x{:08X}</baseAddress>'.format(region.origin))
             svd.append('                <size>0x{:08X}</size>'.format(region.size))
             svd.append('            </memoryRegion>')

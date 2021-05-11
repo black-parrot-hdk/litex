@@ -30,25 +30,26 @@ from liteeth.phy.mii import LiteEthPHYMII
 
 class _CRG(Module):
     def __init__(self, platform, sys_clk_freq, toolchain):
+        self.rst = Signal()
         self.clock_domains.cd_sys       = ClockDomain()
         self.clock_domains.cd_sys4x     = ClockDomain(reset_less=True)
         self.clock_domains.cd_sys4x_dqs = ClockDomain(reset_less=True)
-        self.clock_domains.cd_clk200    = ClockDomain()
+        self.clock_domains.cd_idelay    = ClockDomain()
         self.clock_domains.cd_eth       = ClockDomain()
 
         # # #
 
         if toolchain == "vivado":
             self.submodules.pll = pll = S7PLL(speedgrade=-1)
-            self.comb += pll.reset.eq(~platform.request("cpu_reset"))
+            self.comb += pll.reset.eq(~platform.request("cpu_reset") | self.rst)
             pll.register_clkin(platform.request("clk100"), 100e6)
             pll.create_clkout(self.cd_sys,       sys_clk_freq)
             pll.create_clkout(self.cd_sys4x,     4*sys_clk_freq)
             pll.create_clkout(self.cd_sys4x_dqs, 4*sys_clk_freq, phase=90)
-            pll.create_clkout(self.cd_clk200,    200e6)
+            pll.create_clkout(self.cd_idelay,    200e6)
             pll.create_clkout(self.cd_eth,       25e6)
 
-            self.submodules.idelayctrl = S7IDELAYCTRL(self.cd_clk200)
+            self.submodules.idelayctrl = S7IDELAYCTRL(self.cd_idelay)
 
             self.comb += platform.request("eth_ref_clk").eq(self.cd_eth.clk)
         elif toolchain == "symbiflow": # FIXME
@@ -58,7 +59,7 @@ class _CRG(Module):
             self.specials += Instance("BUFG", i_I=clk100_ibuf, o_O=clk100_buf)
 
             self.submodules.pll = pll = S7PLL(speedgrade=-1)
-            self.comb += pll.reset.eq(~platform.request("cpu_reset"))
+            self.comb += pll.reset.eq(~platform.request("cpu_reset") | self.rst)
             pll.register_clkin(clk100_buf, 100e6)
             pll.create_clkout(self.cd_sys, sys_clk_freq)
 
@@ -122,21 +123,27 @@ class BaseSoC(SoCCore):
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on Arty A7")
-    parser.add_argument("--build", action="store_true", help="Build bitstream")
-    parser.add_argument("--load",  action="store_true", help="Load bitstream")
-    parser.add_argument("--toolchain", default="vivado", help="Gateware toolchain to use, vivado (default) or symbiflow")
-    builder_args(parser)
-    soc_sdram_args(parser)
-    vivado_build_args(parser)
+    parser.add_argument("--build", action="store_true",     help="Build bitstream")
+    parser.add_argument("--load",  action="store_true",     help="Load bitstream")
+    parser.add_argument("--toolchain", default="vivado",    help="FPGA toolchain: vivado (default) or symbiflow")
+    parser.add_argument("--sys-clk-freq",    default=100e6, help="System clock frequency (default: 100MHz)")
     parser.add_argument("--with-ethernet",   action="store_true", help="Enable Ethernet support")
     parser.add_argument("--with-etherbone",  action="store_true", help="Enable Etherbone support")
     parser.add_argument("--with-spi-sdcard", action="store_true", help="Enable SPI-mode SDCard support")
     parser.add_argument("--with-sdcard",     action="store_true", help="Enable SDCard support")
+    builder_args(parser)
+    soc_sdram_args(parser)
+    vivado_build_args(parser)
     args = parser.parse_args()
 
     assert not (args.with_ethernet and args.with_etherbone)
-    soc = BaseSoC(args.toolchain, with_ethernet=args.with_ethernet, with_etherbone=args.with_etherbone,
-        **soc_sdram_argdict(args))
+    soc = BaseSoC(
+	    toolchain      = args.toolchain,
+        sys_clk_freq   = int(float(args.sys_clk_freq)),
+        with_ethernet  = args.with_ethernet,
+        with_etherbone = args.with_etherbone,
+        **soc_sdram_argdict(args)
+    )
     assert not (args.with_spi_sdcard and args.with_sdcard)
     soc.platform.add_extension(arty._sdcard_pmod_io)
     if args.with_spi_sdcard:

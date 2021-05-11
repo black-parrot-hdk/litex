@@ -26,10 +26,14 @@ from litedram.phy import s7ddrphy
 
 from liteeth.phy import LiteEthPHY
 
+from litepcie.phy.s7pciephy import S7PCIEPHY
+from litepcie.software import generate_litepcie_software
+
 # CRG ----------------------------------------------------------------------------------------------
 
 class _CRG(Module):
     def __init__(self, platform, sys_clk_freq):
+        self.rst = Signal()
         self.clock_domains.cd_sys    = ClockDomain()
         self.clock_domains.cd_sys4x  = ClockDomain(reset_less=True)
         self.clock_domains.cd_idelay = ClockDomain()
@@ -37,7 +41,7 @@ class _CRG(Module):
         # # #
 
         self.submodules.pll = pll = S7MMCM(speedgrade=-2)
-        self.comb += pll.reset.eq(platform.request("cpu_reset"))
+        self.comb += pll.reset.eq(platform.request("cpu_reset") | self.rst)
         pll.register_clkin(platform.request("clk200"), 200e6)
         pll.create_clkout(self.cd_sys,    sys_clk_freq)
         pll.create_clkout(self.cd_sys4x,  4*sys_clk_freq)
@@ -48,7 +52,7 @@ class _CRG(Module):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCCore):
-    def __init__(self, sys_clk_freq=int(125e6), with_ethernet=False, **kwargs):
+    def __init__(self, sys_clk_freq=int(125e6), with_ethernet=False, with_pcie=False, with_sata=False, **kwargs):
         platform = kc705.Platform()
 
         # SoCCore ----------------------------------------------------------------------------------
@@ -86,6 +90,49 @@ class BaseSoC(SoCCore):
             self.add_csr("ethphy")
             self.add_ethernet(phy=self.ethphy)
 
+        # PCIe -------------------------------------------------------------------------------------
+        if with_pcie:
+            self.submodules.pcie_phy = S7PCIEPHY(platform, platform.request("pcie_x4"),
+                data_width = 128,
+                bar0_size  = 0x20000)
+            self.add_csr("pcie_phy")
+            self.add_pcie(phy=self.pcie_phy, ndmas=1)
+
+        # SATA -------------------------------------------------------------------------------------
+        if with_sata:
+            from litex.build.generic_platform import Subsignal, Pins
+            from litesata.phy import LiteSATAPHY
+
+            # IOs
+            _sata_io = [
+                # SFP 2 SATA Adapter / https://shop.trenz-electronic.de/en/TE0424-01-SFP-2-SATA-Adapter
+                ("sfp2sata", 0,
+                    Subsignal("tx_p", Pins("H2")),
+                    Subsignal("tx_n", Pins("H1")),
+                    Subsignal("rx_p", Pins("G4")),
+                    Subsignal("rx_n", Pins("G3")),
+                ),
+            ]
+            platform.add_extension(_sata_io)
+
+            # RefClk, Generate 150MHz from PLL.
+            self.clock_domains.cd_sata_refclk = ClockDomain()
+            self.crg.pll.create_clkout(self.cd_sata_refclk, 150e6)
+            sata_refclk = ClockSignal("sata_refclk")
+            platform.add_platform_command("set_property SEVERITY {{Warning}} [get_drc_checks REQP-52]")
+
+            # PHY
+            self.submodules.sata_phy = LiteSATAPHY(platform.device,
+                refclk     = sata_refclk,
+                pads       = platform.request("sfp2sata"),
+                gen        = "gen2",
+                clk_freq   = sys_clk_freq,
+                data_width = 16)
+            self.add_csr("sata_phy")
+
+            # Core
+            self.add_sata(phy=self.sata_phy, mode="read+write")
+
         # Leds -------------------------------------------------------------------------------------
         self.submodules.leds = LedChaser(
             pads         = platform.request_all("user_led"),
@@ -96,16 +143,29 @@ class BaseSoC(SoCCore):
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on KC705")
-    parser.add_argument("--build", action="store_true", help="Build bitstream")
-    parser.add_argument("--load",  action="store_true", help="Load bitstream")
+    parser.add_argument("--build",         action="store_true", help="Build bitstream")
+    parser.add_argument("--load",          action="store_true", help="Load bitstream")
+    parser.add_argument("--sys-clk-freq",  default=125e6,       help="System clock frequency (default: 125MHz)")
+    parser.add_argument("--with-ethernet", action="store_true", help="Enable Ethernet support")
+    parser.add_argument("--with-pcie",     action="store_true", help="Enable PCIe support")
+    parser.add_argument("--driver",        action="store_true", help="Generate PCIe driver")
+    parser.add_argument("--with-sata",     action="store_true", help="Enable SATA support (over SFP2SATA)")
     builder_args(parser)
     soc_sdram_args(parser)
-    parser.add_argument("--with-ethernet", action="store_true", help="Enable Ethernet support")
     args = parser.parse_args()
 
-    soc = BaseSoC(with_ethernet=args.with_ethernet, **soc_sdram_argdict(args))
+    soc = BaseSoC(
+        sys_clk_freq  = int(float(args.sys_clk_freq)),
+        with_ethernet = args.with_ethernet,
+        with_pcie     = args.with_pcie,
+        with_sata     = args.with_sata,
+        **soc_sdram_argdict(args)
+    )
     builder = Builder(soc, **builder_argdict(args))
     builder.build(run=args.build)
+
+    if args.driver:
+        generate_litepcie_software(soc, os.path.join(builder.output_dir, "driver"))
 
     if args.load:
         prog = soc.platform.create_programmer()
