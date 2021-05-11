@@ -519,6 +519,10 @@ class Gearbox(Module):
         # # #
 
         io_lcm = lcm(i_dw, o_dw)
+        if (io_lcm//i_dw) < 2:
+            io_lcm = io_lcm * 2
+        if (io_lcm//o_dw) < 2:
+            io_lcm = io_lcm * 2
 
         # Control path
 
@@ -648,7 +652,7 @@ class Monitor(Module, AutoCSR):
 
         # Tokens Count -----------------------------------------------------------------------------
         if with_tokens:
-            tokens_counter = MonitorCounter(reset, latch, endpoint.valid & endpoint.ready, self.tokens.status)
+            token_counter = MonitorCounter(reset, latch, endpoint.valid & endpoint.ready, self.tokens.status)
             self.submodules += token_counter
 
         # Overflows Count (only useful when endpoint is expected to always be ready) ---------------

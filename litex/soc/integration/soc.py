@@ -18,7 +18,7 @@ from litex.soc.cores.identifier import Identifier
 from litex.soc.cores.timer import Timer
 from litex.soc.cores.spi_flash import SpiFlash
 from litex.soc.cores.spi import SPIMaster
-from litex.soc.cores.video import VideoTimingGenerator, VideoTerminal, VideoFrameBuffer
+from litex.soc.cores.video import VideoTimingGenerator, VideoTerminal, VideoFrameBuffer, ColorBarsPattern
 
 from litex.soc.interconnect.csr import *
 from litex.soc.interconnect.csr_eventmanager import *
@@ -822,6 +822,18 @@ class SoC(Module):
     def add_rom(self, name, origin, size, contents=[], mode="r"):
         self.add_ram(name, origin, size, contents, mode=mode)
 
+    def init_rom(self, name, contents=[], auto_size=True):
+        self.logger.info("Initializing ROM {} with contents (Size: {}).".format(
+            colorer(name),
+            colorer(f"0x{4*len(contents):x}")))
+        getattr(self, name).mem.init = contents
+        if auto_size and self.bus.regions[name].mode == "r":
+            self.logger.info("Auto-Resizing ROM {} from {} to {}.".format(
+                colorer(name),
+                colorer(f"0x{self.bus.regions[name].size:x}"),
+                colorer(f"0x{4*len(contents):x}")))
+            getattr(self, name).mem.depth = len(contents)
+
     def add_csr_bridge(self, origin, register=False):
         csr_bridge_cls = {
             "wishbone": wishbone.Wishbone2CSR,
@@ -1347,7 +1359,7 @@ class LiteXSoC(SoC):
                 base_address = self.bus.regions["main_ram"].origin)
 
     # Add Ethernet ---------------------------------------------------------------------------------
-    def add_ethernet(self, name="ethmac", phy=None, phy_cd="eth", dynamic_ip=False, software_debug=False):
+    def add_ethernet(self, name="ethmac", phy=None, phy_cd="eth", dynamic_ip=False, software_debug=False, nrxslots=2, ntxslots=2):
         # Imports
         from liteeth.mac import LiteEthMAC
 
@@ -1357,12 +1369,15 @@ class LiteXSoC(SoC):
             dw                = 32,
             interface         = "wishbone",
             endianness        = self.cpu.endianness,
-            with_preamble_crc = not software_debug)
+            with_preamble_crc = not software_debug,
+            nrxslots          = nrxslots,
+            ntxslots          = ntxslots)
         ethmac = ClockDomainsRenamer({
             "eth_tx": phy_cd + "_tx",
             "eth_rx": phy_cd + "_rx"})(ethmac)
         setattr(self.submodules, name, ethmac)
-        ethmac_region = SoCRegion(origin=self.mem_map.get(name, None), size=0x2000, cached=False)
+        ethmac_region_size = (ethmac.rx_slots.read()+ethmac.tx_slots.read())*ethmac.slot_size.read()
+        ethmac_region = SoCRegion(origin=self.mem_map.get(name, None), size=ethmac_region_size, cached=False)
         self.bus.add_slave(name=name, slave=ethmac.bus, region=ethmac_region)
         self.csr.add(name, use_loc_if_exists=True)
         if self.irq.enabled:
@@ -1408,7 +1423,8 @@ class LiteXSoC(SoC):
             clk_freq    = self.clk_freq)
         ethcore = ClockDomainsRenamer({
             "eth_tx": phy_cd + "_tx",
-            "eth_rx": phy_cd + "_rx"})(ethcore)
+            "eth_rx": phy_cd + "_rx",
+            "sys":    phy_cd + "_rx"})(ethcore)
         self.submodules.ethcore = ethcore
 
         # Clock domain renaming
@@ -1625,6 +1641,24 @@ class LiteXSoC(SoC):
         # Timing constraints
         self.platform.add_false_path_constraints(self.crg.cd_sys.clk, phy.cd_pcie.clk)
 
+    # Add Video ColorBars Pattern ------------------------------------------------------------------
+    def add_video_colorbars(self, name="video_colorbars", phy=None, timings="800x600@60Hz", clock_domain="sys"):
+        # Video Timing Generator.
+        vtg = VideoTimingGenerator(default_video_timings=timings)
+        vtg = ClockDomainsRenamer(clock_domain)(vtg)
+        self.submodules.video_colorbars_vtg = vtg
+        self.add_csr("video_colorbars_vtg")
+
+        # ColorsBars Pattern.
+        colorbars = ClockDomainsRenamer(clock_domain)(ColorBarsPattern())
+        self.submodules.video_colorbars = colorbars
+
+        # Connect Video Timing Generator to ColorsBars Pattern.
+        self.comb += [
+            vtg.source.connect(colorbars.vtg_sink),
+            colorbars.source.connect(phy.sink)
+        ]
+
     # Add Video Terminal ---------------------------------------------------------------------------
     def add_video_terminal(self, name="video_terminal", phy=None, timings="800x600@60Hz", clock_domain="sys"):
         # Video Timing Generator.
@@ -1668,7 +1702,7 @@ class LiteXSoC(SoC):
         vfb = VideoFrameBuffer(self.sdram.crossbar.get_port(),
              hres = int(timings.split("@")[0].split("x")[0]),
              vres = int(timings.split("@")[0].split("x")[1]),
-             clock_domain = "vga"
+             clock_domain = clock_domain
         )
         self.submodules.video_framebuffer = vfb
         self.add_csr("video_framebuffer")
