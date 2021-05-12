@@ -11,12 +11,14 @@ from migen import *
 
 from litex.soc.interconnect.csr import *
 from litex.soc.interconnect.csr_eventmanager import *
-from litex.soc.integration.doc import ModuleDoc
+from litex.soc.integration.doc import AutoDoc, ModuleDoc
 
 # Timer --------------------------------------------------------------------------------------------
 
-class Timer(Module, AutoCSR, ModuleDoc):
-    """Timer
+class Timer(Module, AutoCSR, AutoDoc):
+    with_uptime = False
+    def __init__(self, width=32):
+        self.intro = ModuleDoc("""Timer
 
     Provides a generic Timer core.
 
@@ -49,8 +51,7 @@ class Timer(Module, AutoCSR, ModuleDoc):
 
     For both modes, the CPU can be advertised by an IRQ that the duration/period has elapsed. (The
     CPU can also do software polling with ``update_value`` and ``value`` to know the elapsed duration)
-    """
-    def __init__(self, width=32):
+    """)
         self._load = CSRStorage(width, description="""Load value when Timer is (re-)enabled.
             In One-Shot mode, the value written to this register specifies the Timer's duration in
             clock cycles.""")
@@ -87,11 +88,13 @@ class Timer(Module, AutoCSR, ModuleDoc):
         self.comb += self.ev.zero.trigger.eq(value != 0)
 
     def add_uptime(self, width=64):
+        if self.with_uptime: return
+        self.with_uptime    = True
         self._uptime_latch  = CSRStorage(description="Write a ``1`` to latch current Uptime cycles to ``uptime_cycles`` register.")
         self._uptime_cycles = CSRStatus(width, description="Latched Uptime since power-up (in ``sys_clk`` cycles).")
 
         # # #
 
-        uptime_cycles = Signal(width, reset_less=True)
+        self.uptime_cycles = uptime_cycles = Signal(width, reset_less=True)
         self.sync += uptime_cycles.eq(uptime_cycles + 1)
         self.sync += If(self._uptime_latch.re, self._uptime_cycles.status.eq(uptime_cycles))

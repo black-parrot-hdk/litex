@@ -270,7 +270,7 @@ def soc_core_args(parser):
     parser.add_argument("--no-ctrl", action="store_true", help="Disable Controller (default=False).")
 
     # ROM parameters
-    parser.add_argument("--integrated-rom-size", default=0x10000, type=auto_int, help="Size/Enable the integrated (BIOS) ROM (default=64KB, automatically resized to BIOS size when smaller).")
+    parser.add_argument("--integrated-rom-size", default=0x20000, type=auto_int, help="Size/Enable the integrated (BIOS) ROM (default=128KB, automatically resized to BIOS size when smaller).")
     parser.add_argument("--integrated-rom-file", default=None,    type=str,      help="Integrated (BIOS) ROM binary file.")
 
     # SRAM parameters
@@ -301,10 +301,6 @@ def soc_core_args(parser):
 
     # L2 Cache
     parser.add_argument("--l2-size",           default=8192, type=auto_int, help="L2 cache size (default=8192).")
-    parser.add_argument("--min-l2-data-width", default=128,  type=auto_int, help="Minimum L2 cache datawidth (default=128).")
-
-    # SDRAM
-    parser.add_argument("--max-sdram-size", default=0x40000000, type=auto_int, help="Maximum SDRAM size mapped to the SoC (default=1GB))")
 
 def soc_core_argdict(args):
     r = dict()

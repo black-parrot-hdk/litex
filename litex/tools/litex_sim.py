@@ -153,11 +153,6 @@ def get_sdram_phy_settings(memtype, data_width, clk_freq):
 # Simulation SoC -----------------------------------------------------------------------------------
 
 class SimSoC(SoCCore):
-    mem_map = {
-        "ethmac": 0xb0000000,
-    }
-    mem_map.update(SoCCore.mem_map)
-
     def __init__(self,
         with_sdram            = False,
         with_ethernet         = False,
@@ -223,13 +218,10 @@ class SimSoC(SoCCore):
                 self.add_constant("MEMTEST_DATA_SIZE", 8*1024)
                 self.add_constant("MEMTEST_ADDR_SIZE", 8*1024)
 
-        #assert not (with_ethernet and with_etherbone)
-
         if with_ethernet and with_etherbone:
             etherbone_ip_address = convert_ip(etherbone_ip_address)
             # Ethernet PHY
             self.submodules.ethphy = LiteEthPHYModel(self.platform.request("eth", 0))
-            self.add_csr("ethphy")
             # Ethernet MAC
             self.submodules.ethmac = LiteEthMAC(phy=self.ethphy, dw=8,
                 interface  = "hybrid",
@@ -237,9 +229,8 @@ class SimSoC(SoCCore):
                 hw_mac     = etherbone_mac_address)
 
             # SoftCPU
-            self.add_memory_region("ethmac", self.mem_map["ethmac"], 0x2000, type="io")
+            self.add_memory_region("ethmac", self.mem_map.get("ethmac", None), 0x2000, type="io")
             self.add_wb_slave(self.mem_regions["ethmac"].origin, self.ethmac.bus, 0x2000)
-            self.add_csr("ethmac")
             if self.irq.enabled:
                 self.irq.add("ethmac", use_loc_if_exists=True)
             # HW ethernet
@@ -255,7 +246,6 @@ class SimSoC(SoCCore):
         elif with_ethernet:
             # Ethernet PHY
             self.submodules.ethphy = LiteEthPHYModel(self.platform.request("eth", 0))
-            self.add_csr("ethphy")
             # Ethernet MAC
             ethmac = LiteEthMAC(phy=self.ethphy, dw=32,
                 interface  = "wishbone",
@@ -263,9 +253,8 @@ class SimSoC(SoCCore):
             if with_etherbone:
                 ethmac = ClockDomainsRenamer({"eth_tx": "ethphy_eth_tx", "eth_rx":  "ethphy_eth_rx"})(ethmac)
             self.submodules.ethmac = ethmac
-            self.add_memory_region("ethmac", self.mem_map["ethmac"], 0x2000, type="io")
+            self.add_memory_region("ethmac", self.mem_map.get("ethmac", None), 0x2000, type="io")
             self.add_wb_slave(self.mem_regions["ethmac"].origin, self.ethmac.bus, 0x2000)
-            self.add_csr("ethmac")
             if self.irq.enabled:
                 self.irq.add("ethmac", use_loc_if_exists=True)
 
@@ -273,7 +262,6 @@ class SimSoC(SoCCore):
         elif with_etherbone:
             # Ethernet PHY
             self.submodules.ethphy = LiteEthPHYModel(self.platform.request("eth", 0)) # FIXME
-            self.add_csr("ethphy")
             # Ethernet Core
             ethcore = LiteEthUDPIPCore(self.ethphy,
                 mac_address = etherbone_mac_address,
@@ -310,13 +298,11 @@ class SimSoC(SoCCore):
                 depth        = 512,
                 clock_domain = "sys",
                 csr_csv      = "analyzer.csv")
-            self.add_csr("analyzer")
 
         # I2C --------------------------------------------------------------------------------------
         if with_i2c:
             pads = platform.request("i2c", 0)
             self.submodules.i2c = I2CMasterSim(pads)
-            self.add_csr("i2c")
 
         # SDCard -----------------------------------------------------------------------------------
         if with_sdcard:
@@ -407,7 +393,7 @@ def main():
 
     # Configuration --------------------------------------------------------------------------------
 
-    cpu = CPUS[soc_kwargs.get("cpu_type", "vexriscv")]
+    cpu = CPUS.get(soc_kwargs.get("cpu_type", "vexriscv"))
     if soc_kwargs["uart_name"] == "serial":
         soc_kwargs["uart_name"] = "sim"
         sim_config.add_module("serial2console", "serial")

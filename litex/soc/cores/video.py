@@ -24,6 +24,17 @@ vbits = 12
 # Video Timings ------------------------------------------------------------------------------------
 
 video_timings = {
+    "640x480@60Hz" : {
+        "pix_clk"       : 25.175e6,
+        "h_active"      : 640,
+        "h_blanking"    : 160,
+        "h_sync_offset" : 16,
+        "h_sync_width"  : 96,
+        "v_active"      : 480,
+        "v_blanking"    : 45,
+        "v_sync_offset" : 10,
+        "v_sync_width"  : 2,
+    },
     "640x480@75Hz" : {
         "pix_clk"       : 31.5e6,
         "h_active"      : 640,
@@ -141,7 +152,18 @@ video_data_layout = [
 
 class VideoTimingGenerator(Module, AutoCSR):
     def __init__(self, default_video_timings="800x600@60Hz"):
-        vt = video_timings[default_video_timings]
+        # Check / Get Video Timings (can be str or dict)
+        if isinstance(default_video_timings, str):
+            try:
+                self.video_timings = vt = video_timings[default_video_timings]
+            except KeyError:
+                msg = [f"Video Timings {default_video_timings} not supported, availables:"]
+                for video_timing in video_timings.keys():
+                    msg.append(f" - {video_timing} / {video_timings[video_timing]['pix_clk']/1e6:3.2f}MHz.")
+                raise ValueError("\n".join(msg))
+        else:
+            self.video_timings = vt = default_video_timings
+
         # MMAP Control/Status Registers.
         self._enable      = CSRStorage(reset=1)
 
@@ -330,10 +352,7 @@ class CSIInterpreter(Module):
         self.sink   = sink   = stream.Endpoint([("data", 8)])
         self.source = source = stream.Endpoint([("data", 8)])
 
-        self.color = Record([("r", 8), ("g", 8), ("b", 8)])
-        self.color.r.reset = 0xff
-        self.color.g.reset = 0xff
-        self.color.b.reset = 0xff
+        self.color = Signal(4)
 
         # # #
 
@@ -379,15 +398,10 @@ class CSIInterpreter(Module):
         )
         fsm.act("DECODE-CSI",
             If(csi_final == ord("m"),
-                # FIXME: Write color in Terminal Mem.
                 If((csi_bytes[0] == ord("9")) and (csi_bytes[1] == ord("2")),
-                    NextValue(self.color.r, 0x89),
-                    NextValue(self.color.g, 0xe2),
-                    NextValue(self.color.b, 0x34),
+                    NextValue(self.color, 1), # FIXME: Add Palette.
                 ).Else(
-                    NextValue(self.color.r, self.color.r.reset),
-                    NextValue(self.color.g, self.color.g.reset),
-                    NextValue(self.color.b, self.color.b.reset),
+                    NextValue(self.color, 0), # FIXME: Add Palette.
                 ),
             ),
             NextState("RECOPY")
@@ -401,6 +415,8 @@ class VideoTerminal(Module):
         self.source    = source     = stream.Endpoint(video_data_layout)
 
         # # #
+
+        csi_width = 8 if with_csi_interpreter else 0
 
         # Font Mem.
         # ---------
@@ -419,7 +435,7 @@ class VideoTerminal(Module):
         term_lines  = math.floor(vres/font_heigth)
         term_depth  = term_colums * term_lines
         term_init   = [ord(c) for c in [" "]*term_colums*term_lines]
-        term_mem    = Memory(width=font_width, depth=term_depth, init=term_init)
+        term_mem    = Memory(width=font_width + csi_width, depth=term_depth, init=term_init)
         term_wrport = term_mem.get_port(write_capable=True)
         term_rdport = term_mem.get_port(has_re=True)
         self.specials += term_mem, term_wrport, term_rdport
@@ -432,6 +448,7 @@ class VideoTerminal(Module):
             self.submodules.csi_interpreter = CSIInterpreter()
             self.comb += uart_sink.connect(self.csi_interpreter.sink)
             uart_sink = self.csi_interpreter.source
+            self.comb += term_wrport.dat_w[font_width:].eq(self.csi_interpreter.color)
 
         self.submodules.uart_fifo = stream.SyncFIFO([("data", 8)], 8)
         self.comb += uart_sink.connect(self.uart_fifo.sink)
@@ -449,7 +466,7 @@ class VideoTerminal(Module):
         )
         uart_fsm.act("CLEAR-XY",
             term_wrport.we.eq(1),
-            term_wrport.dat_w.eq(ord(" ")),
+            term_wrport.dat_w[:font_width].eq(ord(" ")),
             NextValue(x_term, x_term + 1),
             If(x_term == (term_colums - 1),
                 NextValue(x_term, 0),
@@ -476,12 +493,12 @@ class VideoTerminal(Module):
         uart_fsm.act("WRITE",
             uart_sink.ready.eq(1),
             term_wrport.we.eq(1),
-            term_wrport.dat_w.eq(uart_sink.data),
+            term_wrport.dat_w[:font_width].eq(uart_sink.data),
             NextState("INCR-X")
         )
         uart_fsm.act("RST-X",
             NextValue(x_term, 0),
-            NextState("IDLE")
+            NextState("CLEAR-X")
         )
         uart_fsm.act("INCR-X",
             NextValue(x_term, x_term + 1),
@@ -506,7 +523,7 @@ class VideoTerminal(Module):
         uart_fsm.act("CLEAR-X",
             NextValue(x_term, x_term + 1),
             term_wrport.we.eq(1),
-            term_wrport.dat_w.eq(ord(" ")),
+            term_wrport.dat_w[:font_width].eq(ord(" ")),
             If(x_term == (term_colums - 1),
                 NextValue(x_term, 0),
                 NextState("IDLE")
@@ -548,7 +565,7 @@ class VideoTerminal(Module):
         self.comb += term_rdport.re.eq(ce)
         self.comb += term_rdport.adr.eq(x + y_rollover*term_colums)
         self.comb += [
-            term_dat_r.eq(term_rdport.dat_r),
+            term_dat_r.eq(term_rdport.dat_r[:font_width]),
             If((x >= 80) | (y >= term_lines),
                 term_dat_r.eq(ord(" ")), # Out of range, generate space.
             )
@@ -562,30 +579,32 @@ class VideoTerminal(Module):
         for i in range(font_width):
             cases[i] = [bit.eq(font_rdport.dat_r[font_width-1-i])]
         self.comb += Case(timing_bufs[1].source.hcount[:int(math.log2(font_width))], cases)
-        # FIXME: Allow static/dynamic Font color.
-        self.comb += If(bit,
-            source.r.eq(0xff),
-            source.g.eq(0xff),
-            source.b.eq(0xff),
-        ).Else(
-            source.r.eq(0x00),
-            source.g.eq(0x00),
-            source.b.eq(0x00)
-        )
+        # FIXME: Add Palette.
+        self.comb += [
+            If(bit,
+                Case(term_rdport.dat_r[font_width:], {
+                    0: [Cat(source.r, source.g, source.b).eq(0xffffff)],
+                    1: [Cat(source.r, source.g, source.b).eq(0x34e289)],
+                })
+            ).Else(
+                Cat(source.r, source.g, source.b).eq(0x000000),
+            )
+        ]
 
 # Video FrameBuffer --------------------------------------------------------------------------------
 
 class VideoFrameBuffer(Module, AutoCSR):
     """Video FrameBuffer"""
-    def __init__(self, dram_port, hres=800, vres=600, base=0x00000000, clock_domain="sys"):
-        self.vtg_sink = vtg_sink   = stream.Endpoint(video_timing_layout)
-        self.source   = source = stream.Endpoint(video_data_layout)
+    def __init__(self, dram_port, hres=800, vres=600, base=0x00000000, fifo_depth=65536, clock_domain="sys", clock_faster_than_sys=False):
+        self.vtg_sink  = vtg_sink = stream.Endpoint(video_timing_layout)
+        self.source    = source   = stream.Endpoint(video_data_layout)
+        self.underflow = Signal()
 
         # # #
 
         # Video DMA.
         from litedram.frontend.dma import LiteDRAMDMAReader
-        self.submodules.dma = LiteDRAMDMAReader(dram_port, fifo_depth=2048, fifo_buffered=True) # FIXME: Adjust/Expose.
+        self.submodules.dma = LiteDRAMDMAReader(dram_port, fifo_depth=fifo_depth//(dram_port.data_width//8), fifo_buffered=True)
         self.dma.add_csr(
             default_base   = base,
             default_length = hres*vres*32//8, # 32-bit RGB-444
@@ -593,29 +612,45 @@ class VideoFrameBuffer(Module, AutoCSR):
             default_loop   = 1
         )
 
-        # FIXME: Make sure it will work for all DRAM's data-width/all Video resolutions.
-
-        # Video Data-Width Converter.
-        self.submodules.conv = stream.Converter(dram_port.data_width, 32)
-        self.comb += self.dma.source.connect(self.conv.sink)
-
-        # Video CDC.
-        self.submodules.cdc = stream.ClockDomainCrossing([("data", 32)], cd_from="sys", cd_to=clock_domain)
-        self.comb += self.conv.source.connect(self.cdc.sink)
+        # If DRAM Data Width > 32-bit and Video clock is faster than sys_clk:
+        if (dram_port.data_width > 32) and clock_faster_than_sys:
+            # Do Clock Domain Crossing first...
+            self.submodules.cdc = stream.ClockDomainCrossing([("data", dram_port.data_width)], cd_from="sys", cd_to=clock_domain)
+            self.comb += self.dma.source.connect(self.cdc.sink)
+            # ... and then Data-Width Conversion.
+            self.submodules.conv = stream.Converter(dram_port.data_width, 32)
+            self.comb += self.cdc.source.connect(self.conv.sink)
+            video_pipe_source = self.conv.source
+        # Elsif DRAM Data Widt < 32-bit or Video clock is slower than sys_clk:
+        else:
+            # Do Data-Width Conversion first...
+            self.submodules.conv = stream.Converter(dram_port.data_width, 32)
+            self.comb += self.dma.source.connect(self.conv.sink)
+            # ... and then Clock Domain Crossing.
+            self.submodules.cdc = stream.ClockDomainCrossing([("data", 32)], cd_from="sys", cd_to=clock_domain)
+            self.comb += self.conv.source.connect(self.cdc.sink)
+            self.comb += If(dram_port.data_width < 32, # FIXME.
+                self.cdc.sink.data[ 0: 8].eq(self.conv.source.data[16:24]),
+                self.cdc.sink.data[16:24].eq(self.conv.source.data[ 0: 8]),
+            )
+            video_pipe_source = self.cdc.source
 
         # Video Generation.
         self.comb += [
             vtg_sink.ready.eq(1),
             If(vtg_sink.valid & vtg_sink.de,
-                self.cdc.source.connect(source, keep={"valid", "ready"}),
+                video_pipe_source.connect(source, keep={"valid", "ready"}),
                 vtg_sink.ready.eq(source.valid & source.ready),
 
             ),
             vtg_sink.connect(source, keep={"de", "hsync", "vsync"}),
-            source.r.eq(self.cdc.source.data[ 0: 8]),
-            source.g.eq(self.cdc.source.data[ 8:16]),
-            source.b.eq(self.cdc.source.data[16:24]),
+            source.r.eq(video_pipe_source.data[16:24]),
+            source.g.eq(video_pipe_source.data[ 8:16]),
+            source.b.eq(video_pipe_source.data[ 0: 8]),
         ]
+
+        # Underflow.
+        self.comb += self.underflow.eq(~source.valid)
 
 # Video PHYs ---------------------------------------------------------------------------------------
 
@@ -631,6 +666,10 @@ class VideoVGAPHY(Module):
 
         # Always ack Sink, no backpressure.
         self.comb += sink.ready.eq(1)
+
+        # Drive VGA Clk (Optional).
+        if hasattr(pads, "clk"):
+            self.comb += pads.clk.eq(ClockSignal(clock_domain))
 
         # Drive VGA Conrols.
         self.specials += SDROutput(i=~sink.hsync, o=pads.hsync_n, clk=ClockSignal(clock_domain))
@@ -662,7 +701,8 @@ class VideoDVIPHY(Module):
             self.comb += pads.clk.eq(ClockSignal(clock_domain))
 
         # Drive DVI Controls.
-        self.specials += SDROutput(i=sink.de,    o=pads.de,    clk=ClockSignal(clock_domain))
+        if hasattr(pads, "de"):
+            self.specials += SDROutput(i=sink.de,    o=pads.de,    clk=ClockSignal(clock_domain))
         self.specials += SDROutput(i=sink.hsync, o=pads.hsync, clk=ClockSignal(clock_domain))
         self.specials += SDROutput(i=sink.vsync, o=pads.vsync, clk=ClockSignal(clock_domain))
 
@@ -816,6 +856,79 @@ class VideoS7HDMIPHY(Module):
             pad_n = getattr(pads, f"data{c2d[color]}_n")
             self.specials += Instance("OBUFDS", i_I=pad_o, o_O=pad_p, o_OB=pad_n)
 
+
+class VideoS7GTPHDMIPHY(Module):
+    def __init__(self, pads, sys_clk_freq, clock_domain="sys", clk_freq=148.5e6, refclk=None):
+        assert sys_clk_freq >= clk_freq
+        self.sink = sink = stream.Endpoint(video_data_layout)
+
+        # # #
+
+        from liteiclink.serdes.gtp_7series import GTPQuadPLL, GTP
+
+        # Always ack Sink, no backpressure.
+        self.comb += sink.ready.eq(1)
+
+        # Clocking + Differential Signaling.
+        pads_clk = Signal()
+        self.specials += DDROutput(i1=1, i2=0, o=pads_clk, clk=ClockSignal(clock_domain))
+        self.specials += Instance("OBUFDS", i_I=pads_clk, o_O=pads.clk_p, o_OB=pads.clk_n)
+
+        # GTP Quad PLL.
+        if refclk is None:
+            # No RefClk provided, use the Video Clk as GTP RefClk.
+            refclk = ClockSignal(clock_domain)
+        elif isinstance(refclk, Record):
+            # Differential RefCLk provided, add an IBUFDS_GTE2.
+            refclk_se = Signal()
+            self.specials += Instance("IBUFDS_GTE2",
+                i_CEB = 0,
+                i_I   = refclk.p,
+                i_IB  = refclk.n,
+                o_O   = refclk_se
+            )
+            refclk = refclk_se
+        self.submodules.pll = pll = GTPQuadPLL(refclk, clk_freq, 1.485e9)
+
+        # Encode/Serialize Datas.
+        for color in ["r", "g", "b"]:
+            # TMDS Encoding.
+            encoder = ClockDomainsRenamer(clock_domain)(TMDSEncoder())
+            self.submodules += encoder
+            self.comb += encoder.d.eq(getattr(sink, color))
+            self.comb += encoder.c.eq(Cat(sink.hsync, sink.vsync) if color == "r" else 0)
+            self.comb += encoder.de.eq(sink.de)
+
+            # 10:20 (SerDes has a minimal 20:1 Serialization ratio).
+            converter = ClockDomainsRenamer(clock_domain)(stream.Converter(10, 20))
+            self.submodules += converter
+            self.comb += converter.sink.valid.eq(1)
+            self.comb += converter.sink.data.eq(encoder.out)
+
+            # Clock Domain Crossing (video_clk --> gtp_tx)
+            cdc = stream.ClockDomainCrossing([("data", 20)], cd_from=clock_domain, cd_to=f"gtp{color}_tx")
+            self.submodules += cdc
+            self.comb += converter.source.connect(cdc.sink)
+            self.comb += cdc.source.ready.eq(1) # No backpressure.
+
+            # 20:1 Serialization + Differential Signaling.
+            c2d  = {"r": 2, "g": 1, "b": 0}
+            class GTPPads:
+                def __init__(self, p, n):
+                    self.p = p
+                    self.n = n
+            tx_pads = GTPPads(p=getattr(pads, f"data{c2d[color]}_p"), n=getattr(pads, f"data{c2d[color]}_n"))
+            # FIXME: Find a way to avoid RX pads.
+            rx_pads = GTPPads(p=getattr(pads, f"rx{c2d[color]}_p"),   n=getattr(pads, f"rx{c2d[color]}_n"))
+            gtp = GTP(pll, tx_pads, rx_pads=rx_pads, sys_clk_freq=sys_clk_freq,
+                tx_polarity      = 1, # FIXME: Specific to Decklink Mini 4K, make it configurable.
+                tx_buffer_enable = True,
+                rx_buffer_enable = True,
+                clock_aligner    = False
+            )
+            setattr(self.submodules, f"gtp{color}", gtp)
+            self.comb += gtp.tx_produce_pattern.eq(1)
+            self.comb += gtp.tx_pattern.eq(cdc.source.data)
 
 # HDMI (Lattice ECP5).
 

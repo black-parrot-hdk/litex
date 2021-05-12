@@ -233,7 +233,7 @@ class SoCBusHandler(Module):
         for _, search_region in search_regions.items():
             origin = search_region.origin
             while (origin + size) < (search_region.origin + search_region.size_pow2):
-                # Create a Candicate.
+                # Create a Candidate.
                 candidate = SoCRegion(origin=origin, size=size, cached=cached)
                 overlap   = False
                 # Check Candidate does not overlap with allocated existing regions.
@@ -587,23 +587,11 @@ class SoCCSRHandler(SoCLocHandler):
         self.regions[name] = region
 
     # Address map ----------------------------------------------------------------------------------
-    def address_map(self, name, memory, auto_alloc=True):
+    def address_map(self, name, memory):
         if memory is not None:
             name = name + "_" + memory.name_override
         if self.locs.get(name, None) is None:
-            if auto_alloc:
-                self.add(name, use_loc_if_exists=True)
-            else:
-                self.logger.info("{} {} {} at Location {}.".format(
-                colorer(name, color="underline"),
-                self.name,
-                colorer("allocated" if allocated else "added", color="cyan" if allocated else "green"),
-                colorer(n)))
-                self.logger.error("CSR {} {}.".format(
-                    colorer(name),
-                    colorer("not found", color="red")))
-                self.logger.error(self)
-                raise
+            self.add(name, use_loc_if_exists=True)
         return self.locs[name]
 
     # Str ------------------------------------------------------------------------------------------
@@ -795,6 +783,25 @@ class SoC(Module):
             self.add_constant(name + "_" + value)
         else:
             self.add_constant(name, value)
+
+    def check_bios_requirements(self):
+        # Check for required Peripherals.
+        for periph in [ "timer0"]:
+            if periph not in self.csr.locs.keys():
+                self.logger.error("BIOS needs {} peripheral to be {}.".format(
+                    colorer(periph),
+                    colorer("used", color="red")))
+                self.logger.error(self.bus)
+                raise
+
+        # Check for required Memory Regions.
+        for mem in ["rom", "sram"]:
+            if mem not in self.bus.regions.keys():
+                self.logger.error("BIOS needs {} Region to be {} as Bus or Linker Region.".format(
+                    colorer(mem),
+                    colorer("defined", color="red")))
+                self.logger.error(self.bus)
+                raise
 
     # SoC Main Components --------------------------------------------------------------------------
     def add_controller(self, name="ctrl", **kwargs):
@@ -1041,12 +1048,6 @@ class SoC(Module):
 
         # SoC CPU Check ----------------------------------------------------------------------------
         if not isinstance(self.cpu, (cpu.CPUNone, cpu.Zynq7000)):
-            if "sram" not in self.bus.regions.keys():
-                self.logger.error("CPU needs {} Region to be {} as Bus or Linker Region.".format(
-                    colorer("sram"),
-                    colorer("defined", color="red")))
-                self.logger.error(self.bus)
-                raise
             cpu_reset_address_valid = False
             for name, container in self.bus.regions.items():
                 if self.bus.check_region_is_in(
@@ -1069,12 +1070,17 @@ class SoC(Module):
                     continue
                 if hasattr(self, name):
                     module = getattr(self, name)
-                    if not hasattr(module, "ev"):
+                    ev = None
+                    if hasattr(module, "ev"):
+                        ev = module.ev
+                    elif isinstance(module, EventManager):
+                        ev = module
+                    else:
                         self.logger.error("EventManager {} in {} SubModule.".format(
                             colorer("not found", color="red"),
                             colorer(name)))
                         raise
-                    self.comb += self.cpu.interrupt[loc].eq(module.ev.irq)
+                    self.comb += self.cpu.interrupt[loc].eq(ev.irq)
                 self.add_constant(name + "_INTERRUPT", loc)
 
         # SoC Infos --------------------------------------------------------------------------------
@@ -1091,6 +1097,8 @@ class SoC(Module):
     # SoC build ------------------------------------------------------------------------------------
     def build(self, *args, **kwargs):
         self.build_name = kwargs.pop("build_name", self.platform.name)
+        if self.build_name[0].isdigit():
+            self.build_name = f"_{self.build_name}"
         kwargs.update({"build_name": self.build_name})
         return self.platform.build(self, *args, **kwargs)
 
@@ -1195,16 +1203,16 @@ class LiteXSoC(SoC):
         self.bus.add_master(name="uartbone", master=self.uartbone.wishbone)
 
     # Add JTAGbone ---------------------------------------------------------------------------------
-    def add_jtagbone(self):
+    def add_jtagbone(self, chain=1):
         from litex.soc.cores import uart
         from litex.soc.cores.jtag import JTAGPHY
         self.check_if_exists("jtabone")
-        self.submodules.jtagbone_phy = JTAGPHY(device=self.platform.device)
+        self.submodules.jtagbone_phy = JTAGPHY(device=self.platform.device, chain=chain)
         self.submodules.jtagbone = uart.UARTBone(phy=self.jtagbone_phy, clk_freq=self.sys_clk_freq)
         self.bus.add_master(name="jtagbone", master=self.jtagbone.wishbone)
 
     # Add SDRAM ------------------------------------------------------------------------------------
-    def add_sdram(self, name, phy, module, origin, size=None, with_bist=False, with_soc_interconnect=True,
+    def add_sdram(self, name, phy, module, origin=None, size=None, with_bist=False, with_soc_interconnect=True,
         l2_cache_size           = 8192,
         l2_cache_min_data_width = 128,
         l2_cache_reverse        = True,
@@ -1262,7 +1270,7 @@ class LiteXSoC(SoC):
             sdram_size = min(sdram_size, size)
 
         # Add SDRAM region.
-        self.bus.add_region("main_ram", SoCRegion(origin=origin, size=sdram_size))
+        self.bus.add_region("main_ram", SoCRegion(origin=self.mem_map.get("main_ram", origin), size=sdram_size))
 
         # Add CPU's direct memory buses (if not already declared) ----------------------------------
         if hasattr(self.cpu, "add_memory_buses"):
@@ -1364,13 +1372,18 @@ class LiteXSoC(SoC):
                 base_address = self.bus.regions["main_ram"].origin)
 
     # Add Ethernet ---------------------------------------------------------------------------------
-    def add_ethernet(self, name="ethmac", phy=None, phy_cd="eth", dynamic_ip=False, software_debug=False, nrxslots=2, ntxslots=2):
+    def add_ethernet(self, name="ethmac", phy=None, phy_cd="eth", dynamic_ip=False, software_debug=False,
+        nrxslots       = 2,
+        ntxslots       = 2,
+        with_timestamp = False):
         # Imports
         from liteeth.mac import LiteEthMAC
         from liteeth.phy.model import LiteEthPHYModel
 
         # MAC.
         self.check_if_exists(name)
+        if with_timestamp:
+            self.timer0.add_uptime()
         ethmac = LiteEthMAC(
             phy        = phy,
             dw         = 32,
@@ -1378,6 +1391,7 @@ class LiteXSoC(SoC):
             endianness = self.cpu.endianness,
             nrxslots   = nrxslots,
             ntxslots   = ntxslots,
+            timestamp  = None if not with_timestamp else self.timer0.uptime_cycles,
             with_preamble_crc = not software_debug)
         # Use PHY's eth_tx/eth_rx clock domains.
         ethmac = ClockDomainsRenamer({
@@ -1497,8 +1511,6 @@ class LiteXSoC(SoC):
 
     # Add SDCard -----------------------------------------------------------------------------------
     def add_sdcard(self, name="sdcard", mode="read+write", use_emulator=False, software_debug=False):
-        # FIXME: Make sure Linux Driver does not rely on CSR implicit ordering and remove self.csr.add().
-
         # Imports.
         from litesdcard.emulator import SDEmulator
         from litesdcard.phy import SDPHY
@@ -1521,8 +1533,6 @@ class LiteXSoC(SoC):
         self.check_if_exists("sdcore")
         self.submodules.sdphy  = SDPHY(sdcard_pads, self.platform.device, self.clk_freq, cmd_timeout=10e-1, data_timeout=10e-1)
         self.submodules.sdcore = SDCore(self.sdphy)
-        self.csr.add("sdphy", use_loc_if_exists=True)
-        self.csr.add("sdcore", use_loc_if_exists=True)
 
         # Block2Mem DMA.
         if "read" in mode:
@@ -1531,7 +1541,6 @@ class LiteXSoC(SoC):
             self.comb += self.sdcore.source.connect(self.sdblock2mem.sink)
             dma_bus = self.bus if not hasattr(self, "dma_bus") else self.dma_bus
             dma_bus.add_master("sdblock2mem", master=bus)
-            self.csr.add("sdblock2mem", use_loc_if_exists=True)
 
         # Mem2Block DMA.
         if "write" in mode:
@@ -1540,20 +1549,22 @@ class LiteXSoC(SoC):
             self.comb += self.sdmem2block.source.connect(self.sdcore.sink)
             dma_bus = self.bus if not hasattr(self, "dma_bus") else self.dma_bus
             dma_bus.add_master("sdmem2block", master=bus)
-            self.csr.add("sdmem2block", use_loc_if_exists=True)
 
         # Interrupts.
         self.submodules.sdirq = EventManager()
         self.sdirq.card_detect   = EventSourcePulse(description="SDCard has been ejected/inserted.")
         self.sdirq.block2mem_dma = EventSourcePulse(description="Block2Mem DMA terminated.")
         self.sdirq.mem2block_dma = EventSourcePulse(description="Mem2Block DMA terminated.")
+        self.sdirq.cmd_done      = EventSourceLevel(description="Command completed.")
         self.sdirq.finalize()
-        self.csr.add("sdirq")
         self.comb += [
             self.sdirq.card_detect.trigger.eq(self.sdphy.card_detect_irq),
             self.sdirq.block2mem_dma.trigger.eq(self.sdblock2mem.irq),
             self.sdirq.mem2block_dma.trigger.eq(self.sdmem2block.irq),
+            self.sdirq.cmd_done.trigger.eq(self.sdcore.cmd_event.fields.done)
         ]
+        if self.irq.enabled:
+            self.irq.add("sdirq", use_loc_if_exists=True)
 
         # Debug.
         if software_debug:
@@ -1621,7 +1632,6 @@ class LiteXSoC(SoC):
 
         # Checks.
         assert self.csr.data_width == 32
-        assert not hasattr(self, f"{name}_endpoint")
 
         # Endpoint.
         self.check_if_exists(f"{name}_endpoint")
@@ -1670,7 +1680,7 @@ class LiteXSoC(SoC):
 
         # Video Timing Generator.
         self.check_if_exists(f"{name}_vtg")
-        vtg = VideoTimingGenerator(default_video_timings=timings)
+        vtg = VideoTimingGenerator(default_video_timings=timings if isinstance(timings, str) else timings[1])
         vtg = ClockDomainsRenamer(clock_domain)(vtg)
         setattr(self.submodules, f"{name}_vtg", vtg)
 
@@ -1692,11 +1702,12 @@ class LiteXSoC(SoC):
 
         # Video Timing Generator.
         self.check_if_exists(f"{name}_vtg")
-        vtg = VideoTimingGenerator(default_video_timings=timings)
+        vtg = VideoTimingGenerator(default_video_timings=timings if isinstance(timings, str) else timings[1])
         vtg = ClockDomainsRenamer(clock_domain)(vtg)
         setattr(self.submodules, f"{name}_vtg", vtg)
 
         # Video Terminal.
+        timings = timings if isinstance(timings, str) else timings[0]
         vt = VideoTerminal(
             hres = int(timings.split("@")[0].split("x")[0]),
             vres = int(timings.split("@")[0].split("x")[1]),
@@ -1725,15 +1736,21 @@ class LiteXSoC(SoC):
         from litex.soc.cores.video import VideoTimingGenerator, VideoFrameBuffer
 
         # Video Timing Generator.
-        vtg = VideoTimingGenerator(default_video_timings=timings)
+        vtg = VideoTimingGenerator(default_video_timings=timings if isinstance(timings, str) else timings[1])
         vtg = ClockDomainsRenamer(clock_domain)(vtg)
         setattr(self.submodules, f"{name}_vtg", vtg)
 
         # Video FrameBuffer.
+        timings = timings if isinstance(timings, str) else timings[0]
+        base = self.mem_map.get(name, 0x40c00000)
+        hres = int(timings.split("@")[0].split("x")[0])
+        vres = int(timings.split("@")[0].split("x")[1])
         vfb = VideoFrameBuffer(self.sdram.crossbar.get_port(),
-             hres = int(timings.split("@")[0].split("x")[0]),
-             vres = int(timings.split("@")[0].split("x")[1]),
-             clock_domain = clock_domain
+            hres = hres,
+            vres = vres,
+            base = base,
+            clock_domain          = clock_domain,
+            clock_faster_than_sys = vtg.video_timings["pix_clk"] > self.sys_clk_freq
         )
         setattr(self.submodules, name, vfb)
 
@@ -1742,3 +1759,8 @@ class LiteXSoC(SoC):
 
         # Connect Video FrameBuffer to Video PHY.
         self.comb += vfb.source.connect(phy.sink)
+
+        # Constants.
+        self.add_constant("VIDEO_FRAMEBUFFER_BASE", base)
+        self.add_constant("VIDEO_FRAMEBUFFER_HRES", hres)
+        self.add_constant("VIDEO_FRAMEBUFFER_VRES", vres)

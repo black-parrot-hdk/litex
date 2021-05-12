@@ -54,7 +54,6 @@ soc_software_packages = [
 # Builder ------------------------------------------------------------------------------------------
 
 soc_directory         = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-compiler_rt_directory = get_data_mod("software", "compiler_rt").data_location
 
 class Builder:
     def __init__(self, soc,
@@ -136,6 +135,7 @@ class Builder:
 
             # Define the SoC/Compiler-RT/Software/Include directories.
             define("SOC_DIRECTORY",         soc_directory)
+            compiler_rt_directory = get_data_mod("software", "compiler_rt").data_location
             define("COMPILER_RT_DIRECTORY", compiler_rt_directory)
             variables_contents.append("export BUILDINC_DIRECTORY")
             define("BUILDINC_DIRECTORY", self.include_dir)
@@ -258,13 +258,20 @@ class Builder:
         if self.soc.cpu_type is not None:
             if self.soc.cpu.use_rom:
                 # Prepare/Generate ROM software.
+                use_bios = (
+                    # BIOS compilation enabled.
+                    self.compile_software and
+                    # ROM contents has not already been initialized.
+                    (not self.soc.integrated_rom_initialized)
+                )
+                if use_bios:
+                    self.soc.check_bios_requirements()
                 self._prepare_rom_software()
-                self._generate_rom_software(not self.soc.integrated_rom_initialized)
+                self._generate_rom_software(compile_bios=use_bios)
 
                 # Initialize ROM.
-                if self.soc.integrated_rom_size and self.compile_software:
-                    if not self.soc.integrated_rom_initialized:
-                        self._initialize_rom_software()
+                if use_bios and self.soc.integrated_rom_size:
+                    self._initialize_rom_software()
 
         # Translate compile_gateware to run.
         if "run" not in kwargs:
