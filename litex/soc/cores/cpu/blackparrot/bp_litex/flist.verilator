@@ -28,7 +28,6 @@ $BASEJUMP_STL_DIR/bsg_async/bsg_async_ptr_gray.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_dma.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_miss.v
-$BASEJUMP_STL_DIR/bsg_cache/bsg_cache_decode.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_sbuf.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_sbuf_queue.v
 $BASEJUMP_STL_DIR/bsg_dataflow/bsg_channel_tunnel.v
@@ -141,14 +140,10 @@ $BP_COMMON_DIR/src/v/bp_tlb_replacement.v
 $BP_BE_DIR/src/v/bp_be_top.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_bypass.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_calculator_top.v
-$BP_BE_DIR/src/v/bp_be_calculator/bp_be_instr_decoder.v
-$BP_BE_DIR/src/v/bp_be_calculator/bp_be_int_alu.v
-$BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_fp.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_int.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_ctrl.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_long.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_mem.v
-$BP_BE_DIR/src/v/bp_be_calculator/bp_be_pipe_mul.v
 $BP_BE_DIR/src/v/bp_be_calculator/bp_be_regfile.v
 $BP_BE_DIR/src/v/bp_be_checker/bp_be_checker_top.v
 $BP_BE_DIR/src/v/bp_be_checker/bp_be_detector.v
@@ -266,4 +261,5 @@ $BP_TOP_DIR/test/common/bp_nonsynth_nbf_loader.v
 //$BP_TOP_DIR/test/common/bp_nonsynth_pc_profiler.v
 //$BP_TOP_DIR/test/common/bp_nonsynth_branch_profiler.v
 $BP_LITEX_DIR/bp2wb_convertor.v
+$BP_LITEX_DIR/bp_softcore.sv2v.v
 $BP_LITEX_DIR/simulation/ExampleBlackParrotSystem.v

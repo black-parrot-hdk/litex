@@ -114,7 +114,7 @@ logic load_cmd_v_lo, load_cmd_yumi_li;
 bp_cce_mem_msg_s load_resp_li;
 logic load_resp_v_li, load_resp_ready_lo;
 
-bp_softcore
+bp_softcore_02
 #(.bp_params_p(bp_params_p))
  softcore
   (.clk_i(clk_i)

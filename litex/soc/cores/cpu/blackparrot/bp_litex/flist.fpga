@@ -266,4 +266,5 @@ $BP_TOP_DIR/test/common/bp_nonsynth_nbf_loader.v
 //$BP_TOP_DIR/test/common/bp_nonsynth_pc_profiler.v
 //$BP_TOP_DIR/test/common/bp_nonsynth_branch_profiler.v
 $BP_LITEX_DIR/bp2wb_convertor.v
+$BP_LITEX_DIR/bp_softcore.sv2v.v
 $BP_LITEX_DIR/fpga/ExampleBlackParrotSystem.v
